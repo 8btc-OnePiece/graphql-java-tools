@@ -8,6 +8,7 @@ import graphql.schema.idl.ScalarInfo
 import graphql.schema.idl.SchemaGeneratorHelper
 import org.slf4j.LoggerFactory
 import java.util.*
+import java.util.stream.Collectors
 import kotlin.reflect.KClass
 
 /**
@@ -33,6 +34,7 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
     private val dictionary = scanResult.dictionary
     private val definitions = scanResult.definitions
     private val customScalars = scanResult.customScalars
+    private val customDirectives = scanResult.customDirectives
     private val rootInfo = scanResult.rootInfo
     private val fieldResolversByType = scanResult.fieldResolversByType
     private val unusedDefinitions = scanResult.unusedDefinitions
@@ -89,7 +91,7 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
         val additionalObjects = objects.filter { o -> o != query && o != subscription && o != mutation }
 
         val types = (additionalObjects.toSet() as Set<GraphQLType>) + inputObjects + enums + interfaces + unions
-        return SchemaObjects(query, mutation, subscription, types, codeRegistryBuilder)
+        return SchemaObjects(query, mutation, subscription, types, codeRegistryBuilder, buildCustomDirectiveSet())
     }
 
     /**
@@ -291,6 +293,36 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
             is ObjectValue -> value.objectFields.associate { it.name to buildDefaultValue(it.value) }
             else -> throw SchemaError("Unrecognized default value: $value")
         }
+    }
+
+    /**
+     * 原实现中，toSchema生成的图忽略了自定义directive的定义
+     * 这边把它加上，由一开始scan到的数据组装而成
+     */
+    private fun buildCustomDirectiveSet(): Set<GraphQLDirective> {
+        val directiveSet = HashSet<GraphQLDirective>()
+        for(element in customDirectives){
+            directiveSet.add(GraphQLDirective.newDirective()
+                    .name(element.name)
+                    .description(element.description?.content)
+                    .validLocations(
+                            *element.directiveLocations.stream().map {
+                                Introspection.DirectiveLocation.valueOf(it.name.toUpperCase())
+                            }.collect(Collectors.toList()).toTypedArray()
+                    )
+                    .replaceArguments(
+                            element.inputValueDefinitions.stream().map {
+                                GraphQLArgument.newArgument()
+                                        .name(it.name)
+                                        .type(determineInputType(it.type))
+                                        .defaultValue(it.defaultValue)
+                                        .description(it.description?.content)
+                                        .build()
+                            }.collect(Collectors.toList())
+                    )
+                    .build())
+        }
+        return directiveSet
     }
 
     private fun determineOutputType(typeDefinition: Type<*>) =

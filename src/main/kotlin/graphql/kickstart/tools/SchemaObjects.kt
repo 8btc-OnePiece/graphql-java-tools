@@ -1,15 +1,12 @@
 package graphql.kickstart.tools
 
-import graphql.schema.GraphQLCodeRegistry
-import graphql.schema.GraphQLObjectType
-import graphql.schema.GraphQLSchema
-import graphql.schema.GraphQLType
+import graphql.schema.*
 import graphql.schema.visibility.NoIntrospectionGraphqlFieldVisibility
 
 /**
  * @author Andrew Potter
  */
-data class SchemaObjects(val query: GraphQLObjectType, val mutation: GraphQLObjectType?, val subscription: GraphQLObjectType?, val dictionary: Set<GraphQLType>, val codeRegistryBuilder: GraphQLCodeRegistry.Builder) {
+data class SchemaObjects(val query: GraphQLObjectType, val mutation: GraphQLObjectType?, val subscription: GraphQLObjectType?, val dictionary: Set<GraphQLType>, val codeRegistryBuilder: GraphQLCodeRegistry.Builder, val customDirectiveSet: Set<GraphQLDirective>) {
 
     /**
      * Makes a GraphQLSchema with query, mutation and subscription.
@@ -25,6 +22,7 @@ data class SchemaObjects(val query: GraphQLObjectType, val mutation: GraphQLObje
                 .subscription(subscription)
                 .additionalTypes(dictionary)
                 .codeRegistry(codeRegistryBuilder.build())
+                .additionalDirectives(customDirectiveSet)
                 .build()
     }
 
