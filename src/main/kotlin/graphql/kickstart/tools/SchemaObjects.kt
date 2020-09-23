@@ -1,6 +1,10 @@
 package graphql.kickstart.tools
 
-import graphql.schema.*
+import graphql.schema.GraphQLCodeRegistry
+import graphql.schema.GraphQLObjectType
+import graphql.schema.GraphQLSchema
+import graphql.schema.GraphQLType
+import graphql.schema.GraphQLDirective
 import graphql.schema.visibility.NoIntrospectionGraphqlFieldVisibility
 
 /**
