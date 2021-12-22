@@ -10,7 +10,7 @@ import java.lang.reflect.Method
 /**
  * @author Andrew Potter
  */
-internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, allDefinitions: List<Definition<*>>, resolvers: List<GraphQLResolver<*>>, private val scalars: CustomScalarMap, private val options: SchemaParserOptions) {
+internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, private val applicationClassPaths: List<String>, allDefinitions: List<Definition<*>>, resolvers: List<GraphQLResolver<*>>, private val scalars: CustomScalarMap, private val options: SchemaParserOptions) {
 
     companion object {
         val log = LoggerFactory.getLogger(SchemaClassScanner::class.java)!!
@@ -25,7 +25,7 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, al
     private val resolverInfos = resolvers.asSequence().minus(queryResolvers).minus(mutationResolvers).minus(subscriptionResolvers).map { NormalResolverInfo(it, options) }.toList()
     private val resolverInfosByDataClass = this.resolverInfos.associateBy { it.dataClassType }
 
-    private val initialDictionary = initialDictionary.mapValues { InitialDictionaryEntry(it.value) }
+    private val initialDictionary = initialDictionary.mapValues { InitialDictionaryEntry(it.value) }.toMutableMap()
     private val extensionDefinitions = allDefinitions.filterIsInstance<ObjectTypeExtensionDefinition>()
     private val customDirectives = allDefinitions.filterIsInstance<DirectiveDefinition>()
 
@@ -72,11 +72,11 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, al
         do {
             do {
                 // Require all implementors of discovered interfaces to be discovered or provided.
-                handleInterfaceOrUnionSubTypes(getAllObjectTypesImplementingDiscoveredInterfaces()) { "Object type '${it.name}' implements a known interface, but no class could be found for that type name.  Please pass a class for type '${it.name}' in the parser's dictionary." }
+                handleInterfaceOrUnionSubTypes(getAllObjectTypesImplementingDiscoveredInterfaces()) { "Object type '${it.name}' implements a known interface, but no class could be found for that type name.  Please pass a class for type '${it.name}' or its class path in the parser's dictionary" }
             } while (scanQueue())
 
             // Require all members of discovered unions to be discovered.
-            handleInterfaceOrUnionSubTypes(getAllObjectTypeMembersOfDiscoveredUnions()) { "Object type '${it.name}' is a member of a known union, but no class could be found for that type name.  Please pass a class for type '${it.name}' in the parser's dictionary." }
+            handleInterfaceOrUnionSubTypes(getAllObjectTypeMembersOfDiscoveredUnions()) { "Object type '${it.name}' is a member of a known union, but no class could be found for that type name.  Please pass a class for type '${it.name}' or its class path in the parser's dictionary." }
         } while (scanQueue())
 
         return validateAndCreateResult(rootTypeHolder)
@@ -205,10 +205,23 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, al
         types.forEach { type ->
             val dictionaryContainsType = dictionary.filter { it.key.name == type.name }.isNotEmpty()
             if (!unvalidatedTypes.contains(type) && !dictionaryContainsType) {
-                val initialEntry = initialDictionary[type.name] ?: throw SchemaClassScannerError(failureMessage(type))
-                handleFoundType(type, initialEntry.get(), DictionaryReference())
+                if (null == initialDictionary[type.name]) {
+                    val clazz = findClassInApplicationClassPath(type.name) ?: throw SchemaClassScannerError(failureMessage(type))
+                    initialDictionary[type.name] = InitialDictionaryEntry(clazz)
+                }
+                handleFoundType(type, initialDictionary[type.name]!!.get(), DictionaryReference())
             }
         }
+    }
+
+    private fun findClassInApplicationClassPath(className: String): Class<*>? {
+        for (classPath in applicationClassPaths) {
+            try {
+                return Class.forName(classPath + className)
+            } catch (ignore: ClassNotFoundException) {
+            }
+        }
+        return null
     }
 
     private fun getResolverInfoFromTypeDictionary(typeName: String): ResolverInfo? {

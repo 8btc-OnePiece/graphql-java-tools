@@ -162,7 +162,7 @@ class SchemaParserBuilder constructor(private val dictionary: SchemaParserDictio
         val definitions = appendDynamicDefinitions(parseDefinitions())
         val customScalars = scalars.associateBy { it.name }
 
-        return SchemaClassScanner(dictionary.getDictionary(), definitions, resolvers, customScalars, options)
+        return SchemaClassScanner(dictionary.getDictionary(), dictionary.getApplicationClassPaths(), definitions, resolvers, customScalars, options)
                 .scanForClasses()
     }
 
@@ -216,7 +216,11 @@ class SchemaParserDictionary {
 
     private val dictionary: BiMap<String, Class<*>> = BiMap.create()
 
+    private val applicationClassPaths: MutableList<String> = mutableListOf()
+
     fun getDictionary(): BiMap<String, Class<*>> = BiMap.unmodifiableBiMap(dictionary)
+
+    fun getApplicationClassPaths(): List<String> = applicationClassPaths.toList()
 
     /**
      * Add arbitrary classes to the parser's dictionary, overriding the generated type name.
@@ -273,6 +277,14 @@ class SchemaParserDictionary {
     fun add(dictionary: Collection<Class<*>>) = this.apply {
         dictionary.forEach { this.add(it) }
     }
+
+    /**
+     * Add class path used to find class when needed
+     */
+    fun addClassPath(classPath: String) = this.apply {
+        this.applicationClassPaths.add(classPath)
+    }
+
 }
 
 data class SchemaParserOptions internal constructor(
