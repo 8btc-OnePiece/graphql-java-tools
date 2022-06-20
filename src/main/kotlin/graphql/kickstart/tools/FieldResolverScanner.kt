@@ -2,6 +2,11 @@ package graphql.kickstart.tools
 
 import graphql.Scalars
 import graphql.language.FieldDefinition
+import graphql.language.InputValueDefinition
+import graphql.language.ListType
+import graphql.language.NonNullType
+import graphql.language.Directive
+import graphql.language.StringValue
 import graphql.language.TypeName
 import graphql.schema.DataFetchingEnvironment
 import org.apache.commons.lang3.ClassUtils
@@ -17,7 +22,7 @@ import kotlin.reflect.jvm.kotlinFunction
 /**
  * @author Andrew Potter
  */
-internal class FieldResolverScanner(val options: SchemaParserOptions) {
+internal class FieldResolverScanner(private val dictionary: SchemaParserDictionary, val options: SchemaParserOptions) {
 
     private val allowedLastArgumentTypes = listOfNotNull(DataFetchingEnvironment::class.java, options.contextClass)
 
@@ -54,10 +59,61 @@ internal class FieldResolverScanner(val options: SchemaParserOptions) {
         return if (options.allowUnimplementedResolvers) {
             log.warn("Missing resolver for field: $field")
 
-            MissingFieldResolver(field, options)
+            MissingFieldResolver(field, options, getInputValueClassMap(field), getReturnValueClass(field))
         } else {
             throw FieldResolverError(getMissingFieldMessage(field, searches, scanProperties))
         }
+    }
+
+    private fun getInputValueClassMap(field: FieldDefinition): Map<InputValueDefinition, JavaType> {
+        val map = mutableMapOf<InputValueDefinition, JavaType>()
+        for (inputValueDef in field.inputValueDefinitions) {
+            map[inputValueDef] = getGeneralClass(inputValueDef.type)
+        }
+        return map
+    }
+
+    private fun getReturnValueClass(field: FieldDefinition): JavaType {
+        val connectionDirectiveOpt = field.directives.stream().filter { it.name == "connection" }.findFirst()
+        return if (connectionDirectiveOpt.isPresent) {
+            getWrappedByConnectionClass(connectionDirectiveOpt.get())
+        } else {
+            getGeneralClass(field.type)
+        }
+    }
+
+    private fun getWrappedByConnectionClass(connectionDirective: Directive): JavaType {
+        val forArgumentOnDirective = connectionDirective.getArgument("for")
+        val actualTypeClassName = (forArgumentOnDirective.value as StringValue).value
+        return getClassWrapped(actualTypeClassName, "Connection");
+    }
+
+    private fun getGeneralClass(type: graphql.language.Type<*>): JavaType {
+        val className = getTypeName(type)
+        return when (type) {
+            is ListType -> getClassWrapped(className, "Collection")
+            is NonNullType -> getGeneralClass(type.type)
+            else -> dictionary.get(className) ?: throw FieldResolverError(getClassNotFoundMessage(className))
+        }
+    }
+
+    private fun getTypeName(type: graphql.language.Type<*>): String {
+        return when (type) {
+            is ListType -> getTypeName(type.type)
+            is NonNullType -> getTypeName(type.type)
+            is TypeName -> type.name
+            else -> throw FieldResolverError("failed to get type name with it's implementations, situation uncovered, implementation name `${type.javaClass.name}`")
+        }
+    }
+
+    private fun getClassWrapped(className: String, wrapClassName: String): JavaType {
+        val clazz = dictionary.get(className) ?: throw FieldResolverError(getClassNotFoundMessage(className))
+        val wrapClazz = dictionary.get(wrapClassName) ?: throw FieldResolverError(getClassNotFoundMessage(wrapClassName))
+        return ParameterizedTypeImpl.make(wrapClazz, arrayOf(clazz), null)
+    }
+
+    private fun getClassNotFoundMessage(className: String): String {
+        return "failed to load class `$className`";
     }
 
     private fun findFieldResolver(field: FieldDefinition, search: Search, scanProperties: Boolean): FieldResolver? {

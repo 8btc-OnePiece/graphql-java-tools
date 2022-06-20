@@ -10,7 +10,7 @@ import java.lang.reflect.Method
 /**
  * @author Andrew Potter
  */
-internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, private val applicationClassPaths: List<String>, allDefinitions: List<Definition<*>>, resolvers: List<GraphQLResolver<*>>, private val scalars: CustomScalarMap, private val options: SchemaParserOptions) {
+internal class SchemaClassScanner(private val initialDictionary: SchemaParserDictionary, allDefinitions: List<Definition<*>>, resolvers: List<GraphQLResolver<*>>, private val scalars: CustomScalarMap, private val options: SchemaParserOptions) {
 
     companion object {
         val log = LoggerFactory.getLogger(SchemaClassScanner::class.java)!!
@@ -25,7 +25,6 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
     private val resolverInfos = resolvers.asSequence().minus(queryResolvers).minus(mutationResolvers).minus(subscriptionResolvers).map { NormalResolverInfo(it, options) }.toList()
     private val resolverInfosByDataClass = this.resolverInfos.associateBy { it.dataClassType }
 
-    private val initialDictionary = initialDictionary.mapValues { InitialDictionaryEntry(it.value) }.toMutableMap()
     private val extensionDefinitions = allDefinitions.filterIsInstance<ObjectTypeExtensionDefinition>()
     private val customDirectives = allDefinitions.filterIsInstance<DirectiveDefinition>()
 
@@ -34,7 +33,7 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
     private val objectDefinitionsByName = objectDefinitions.associateBy { it.name }
     private val interfaceDefinitionsByName = allDefinitions.filterIsInstance<InterfaceTypeDefinition>().associateBy { it.name }
 
-    private val fieldResolverScanner = FieldResolverScanner(options)
+    private val fieldResolverScanner = FieldResolverScanner(initialDictionary, options)
     private val typeClassMatcher = TypeClassMatcher(definitionsByName)
     private val dictionary = mutableMapOf<TypeDefinition<*>, DictionaryEntry>()
     private val unvalidatedTypes = mutableSetOf<TypeDefinition<*>>()
@@ -43,12 +42,6 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
     private val fieldResolversByType = mutableMapOf<ObjectTypeDefinition, MutableMap<FieldDefinition, FieldResolver>>()
 
     init {
-        initialDictionary.forEach { (name, clazz) ->
-            if (!definitionsByName.containsKey(name)) {
-                throw SchemaClassScannerError("Class in supplied dictionary '${clazz.name}' specified type name '$name', but a type definition with that name was not found!")
-            }
-        }
-
         if (options.allowUnimplementedResolvers) {
             log.warn("Option 'allowUnimplementedResolvers' should only be set to true during development, as it can cause schema errors to be moved to query time instead of schema creation time.  Make sure this is turned off in production.")
         }
@@ -108,10 +101,6 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
     }
 
     private fun validateAndCreateResult(rootTypeHolder: RootTypesHolder): ScannedSchemaObjects {
-        initialDictionary.filter { !it.value.accessed }.forEach {
-            log.warn("Dictionary mapping was provided but never used, and can be safely deleted: \"${it.key}\" -> ${it.value.get().name}")
-        }
-
         val observedDefinitions = dictionary.keys.toSet() + unvalidatedTypes
 
         // The dictionary doesn't need to know what classes are used with scalars.
@@ -205,27 +194,14 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
         types.forEach { type ->
             val dictionaryContainsType = dictionary.filter { it.key.name == type.name }.isNotEmpty()
             if (!unvalidatedTypes.contains(type) && !dictionaryContainsType) {
-                if (null == initialDictionary[type.name]) {
-                    val clazz = findClassInApplicationClassPath(type.name) ?: throw SchemaClassScannerError(failureMessage(type))
-                    initialDictionary[type.name] = InitialDictionaryEntry(clazz)
-                }
-                handleFoundType(type, initialDictionary[type.name]!!.get(), DictionaryReference())
+                val clazz = initialDictionary.get(type.name) ?: throw SchemaClassScannerError(failureMessage(type))
+                handleFoundType(type, clazz, DictionaryReference())
             }
         }
-    }
-
-    private fun findClassInApplicationClassPath(className: String): Class<*>? {
-        for (classPath in applicationClassPaths) {
-            try {
-                return Class.forName(classPath + className)
-            } catch (ignore: ClassNotFoundException) {
-            }
-        }
-        return null
     }
 
     private fun getResolverInfoFromTypeDictionary(typeName: String): ResolverInfo? {
-        val dictionaryType = initialDictionary[typeName]?.get()
+        val dictionaryType = initialDictionary.get(typeName)
         return if (dictionaryType != null) {
             resolverInfosByDataClass[dictionaryType] ?: DataClassResolverInfo(dictionaryType)
         } else {
@@ -385,7 +361,7 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
             return inputValueType
         }
 
-        return initialDictionary[inputGraphQLType.name]?.get()
+        return initialDictionary.get(inputGraphQLType.name)
     }
 
     private fun findInputValueTypeInType(name: String, clazz: Class<*>): JavaType? {
@@ -455,23 +431,21 @@ internal class SchemaClassScanner(initialDictionary: BiMap<String, Class<*>>, pr
         override fun getDescription() = "input object $type"
     }
 
-    private class InitialDictionaryEntry(private val clazz: Class<*>) {
-        var accessed = false
-            private set
-
-        fun get(): Class<*> {
-            accessed = true
-            return clazz
-        }
-    }
-
     class ReturnValueReference(private val method: Method) : Reference() {
         fun getMethod() = method
         override fun getDescription() = "return type of method $method"
     }
 
+    class ReturnValueEmptyReference() : Reference() {
+        override fun getDescription() = "no custom reference method found"
+    }
+
     class MethodParameterReference(private val method: Method, private val index: Int) : Reference() {
         override fun getDescription() = "parameter $index of method $method"
+    }
+
+    class MethodParameterEmptyReference() : Reference() {
+        override fun getDescription() = "no custom reference method found"
     }
 
     class FieldTypeReference(private val field: String) : Reference() {

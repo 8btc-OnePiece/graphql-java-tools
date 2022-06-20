@@ -162,7 +162,7 @@ class SchemaParserBuilder constructor(private val dictionary: SchemaParserDictio
         val definitions = appendDynamicDefinitions(parseDefinitions())
         val customScalars = scalars.associateBy { it.name }
 
-        return SchemaClassScanner(dictionary.getDictionary(), dictionary.getApplicationClassPaths(), definitions, resolvers, customScalars, options)
+        return SchemaClassScanner(dictionary, definitions, resolvers, customScalars, options)
                 .scanForClasses()
     }
 
@@ -212,15 +212,30 @@ class InvalidSchemaError(pce: ParseCancellationException, private val recognitio
         get() = "Invalid schema provided (${recognitionException.javaClass.name}) at: ${recognitionException.offendingToken}"
 }
 
-class SchemaParserDictionary {
+class SchemaParserDictionary constructor(private val sourceClassPaths: List<String> = listOf()) {
 
     private val dictionary: BiMap<String, Class<*>> = BiMap.create()
 
-    private val applicationClassPaths: MutableList<String> = mutableListOf()
+    fun get(name: String): Class<*>? {
+        return if (dictionary.containsKey(name)) {
+            dictionary[name]
+        } else {
+            val clazz = findClassInSourceClassPaths(name);
+            if (clazz != null) {
+                add(clazz)
+            }
+            clazz
+        }
+    }
 
-    fun getDictionary(): BiMap<String, Class<*>> = BiMap.unmodifiableBiMap(dictionary)
-
-    fun getApplicationClassPaths(): List<String> = applicationClassPaths.toList()
+    private fun findClassInSourceClassPaths(className: String): Class<*>? {
+        for (sourceClassPath in sourceClassPaths) {
+            try {
+                return Class.forName(sourceClassPath + className)
+            } catch (ignore: ClassNotFoundException) { }
+        }
+        return null
+    }
 
     /**
      * Add arbitrary classes to the parser's dictionary, overriding the generated type name.
@@ -276,13 +291,6 @@ class SchemaParserDictionary {
      */
     fun add(dictionary: Collection<Class<*>>) = this.apply {
         dictionary.forEach { this.add(it) }
-    }
-
-    /**
-     * Add class path used to find class when needed
-     */
-    fun addClassPath(classPath: String) = this.apply {
-        this.applicationClassPaths.add(classPath)
     }
 
 }
