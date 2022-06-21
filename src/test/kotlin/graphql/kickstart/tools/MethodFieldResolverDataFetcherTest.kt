@@ -124,7 +124,7 @@ class MethodFieldResolverDataFetcherTest {
         } else {
             NormalResolverInfo(resolver, options)
         }
-        return FieldResolverScanner(options).findFieldResolver(field, resolverInfo).createDataFetcher()
+        return FieldResolverScanner(SchemaParserDictionary(), options).findFieldResolver(field, resolverInfo).createDataFetcher()
     }
 
     private fun createEnvironment(source: Any, arguments: Map<String, Any> = emptyMap(), context: Any? = null): DataFetchingEnvironment {
