@@ -59,13 +59,13 @@ internal class FieldResolverScanner(private val dictionary: SchemaParserDictiona
         return if (options.allowUnimplementedResolvers) {
             log.warn("Missing resolver for field: $field")
 
-            MissingFieldResolver(field, options, getInputValueClassMap(field), getReturnValueClass(field))
+            MissingFieldResolver(field, options, getInputTypeClassMap(field), getReturnTypeClass(field))
         } else {
             throw FieldResolverError(getMissingFieldMessage(field, searches, scanProperties))
         }
     }
 
-    private fun getInputValueClassMap(field: FieldDefinition): Map<InputValueDefinition, JavaType> {
+    private fun getInputTypeClassMap(field: FieldDefinition): Map<InputValueDefinition, JavaType> {
         val map = mutableMapOf<InputValueDefinition, JavaType>()
         for (inputValueDef in field.inputValueDefinitions) {
             map[inputValueDef] = getGeneralClass(inputValueDef.type)
@@ -73,7 +73,8 @@ internal class FieldResolverScanner(private val dictionary: SchemaParserDictiona
         return map
     }
 
-    private fun getReturnValueClass(field: FieldDefinition): JavaType {
+    private fun getReturnTypeClass(field: FieldDefinition): JavaType {
+        // the return type might be a connection
         val connectionDirectiveOpt = field.directives.stream().filter { it.name == "connection" }.findFirst()
         return if (connectionDirectiveOpt.isPresent) {
             getWrappedByConnectionClass(connectionDirectiveOpt.get())
@@ -83,6 +84,7 @@ internal class FieldResolverScanner(private val dictionary: SchemaParserDictiona
     }
 
     private fun getWrappedByConnectionClass(connectionDirective: Directive): JavaType {
+        // class name of the actual type is declared with arguement `for`
         val forArgumentOnDirective = connectionDirective.getArgument("for")
         val actualTypeClassName = (forArgumentOnDirective.value as StringValue).value
         return getClassWrapped(actualTypeClassName, "Connection");
@@ -107,6 +109,7 @@ internal class FieldResolverScanner(private val dictionary: SchemaParserDictiona
     }
 
     private fun getClassWrapped(className: String, wrapClassName: String): JavaType {
+        // all the classes here need to be loaded
         val clazz = dictionary.get(className) ?: throw FieldResolverError(getClassNotFoundMessage(className))
         val wrapClazz = dictionary.get(wrapClassName) ?: throw FieldResolverError(getClassNotFoundMessage(wrapClassName))
         return ParameterizedTypeImpl.make(wrapClazz, arrayOf(clazz), null)

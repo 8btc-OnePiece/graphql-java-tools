@@ -34,9 +34,11 @@ internal abstract class FieldResolver(val field: FieldDefinition, val search: Fi
 }
 
 internal class MissingFieldResolver(field: FieldDefinition, options: SchemaParserOptions, private val inputValueClassMap: Map<InputValueDefinition, JavaType>, private val returnValueClass: JavaType): FieldResolver(field, FieldResolverScanner.Search(Any::class.java, MissingResolverInfo(), null), options, Any::class.java) {
+    // offer necessary javaTypes matching schema
     override fun scanForMatches(): List<TypeClassMatcher.PotentialMatch> = inputValueClassMap.map {
         TypeClassMatcher.PotentialMatch.parameterType(it.key.type, it.value, genericType, SchemaClassScanner.MethodParameterEmptyReference(), false)
     } + listOf(TypeClassMatcher.PotentialMatch.returnValue(field.type, returnValueClass, genericType, SchemaClassScanner.ReturnValueEmptyReference(), false))
+    // return null instead of an error message
     override fun createDataFetcher(): DataFetcher<*> = DataFetcher<Any> { null; }
 }
 
