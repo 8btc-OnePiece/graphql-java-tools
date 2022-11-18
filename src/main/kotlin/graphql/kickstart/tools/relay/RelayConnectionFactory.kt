@@ -58,6 +58,7 @@ class RelayConnectionFactory : TypeDefinitionFactory {
     private fun createPageInfo(): ObjectTypeDefinition =
             ObjectTypeDefinition.newObjectTypeDefinition()
                     .name("PageInfo")
+                    .fieldDefinition(FieldDefinition("cursorResetDuration", NonNullType(TypeName("Int"))))
                     .fieldDefinition(FieldDefinition("totalCount", NonNullType(TypeName("Int"))))
                     .fieldDefinition(FieldDefinition("hasPreviousPage", NonNullType(TypeName("Boolean"))))
                     .fieldDefinition(FieldDefinition("hasNextPage", NonNullType(TypeName("Boolean"))))

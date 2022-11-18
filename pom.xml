@@ -4,7 +4,7 @@
 
     <groupId>com.graphql-java-kickstart</groupId>
     <artifactId>graphql-java-tools</artifactId>
-    <version>6.0.2-SNAPSHOT</version>
+    <version>6.0.2.OnePiece.5</version>
     <packaging>jar</packaging>
 
     <name>GraphQL Java Tools</name>
@@ -392,13 +392,13 @@
         <repository>
             <id>nexus</id>
             <name>nexus-releases</name>
-            <url>http://nexus-server:8081/repository/maven-releases/</url>
+            <url>https://nexus.8btc-ops.com/repository/maven-releases/</url>
         </repository>
 
         <snapshotRepository>
             <id>nexus</id>
             <name>nexus-snapshots</name>
-            <url>http://nexus-server:8081/repository/maven-snapshots/</url>
+            <url>https://nexus.8btc-ops.com/repository/maven-snapshots/</url>
         </snapshotRepository>
     </distributionManagement>
     <scm>
