@@ -20,6 +20,8 @@ MissingFieldResolver.scanForMatches()尝试通过加载Class的手段提供引�
 MissingFieldResolver.createDataFetcher()去掉抛错改为返回null值
 ### 6.0.2.Onepiece.5
 RelayConnectionFactory拓展:增加PageInfo字段 cursorResetDuration
+### 6.0.2.Onepiece.6
+之前发布到私服没有源码包，这个版本加上。注意install/deploy时，加上-P nexus会带上sources包。
 
 ## todo
 * 将6.1.0的变更合入6.1.0.OnePiece.x

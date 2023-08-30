@@ -4,7 +4,7 @@
 
     <groupId>com.graphql-java-kickstart</groupId>
     <artifactId>graphql-java-tools</artifactId>
-    <version>6.0.2.OnePiece.5</version>
+    <version>6.0.2.OnePiece.6</version>
     <packaging>jar</packaging>
 
     <name>GraphQL Java Tools</name>
