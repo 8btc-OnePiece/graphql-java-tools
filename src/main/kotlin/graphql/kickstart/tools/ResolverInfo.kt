@@ -1,24 +1,32 @@
 package graphql.kickstart.tools
 
+import graphql.kickstart.tools.resolver.FieldResolverScanner
+import graphql.kickstart.tools.util.GraphQLRootResolver
+import graphql.kickstart.tools.util.JavaType
 import org.apache.commons.lang3.reflect.TypeUtils
 
 internal abstract class ResolverInfo {
     abstract fun getFieldSearches(): List<FieldResolverScanner.Search>
 
     fun getRealResolverClass(resolver: GraphQLResolver<*>, options: SchemaParserOptions) =
-            options.proxyHandlers.find { it.canHandle(resolver) }?.getTargetClass(resolver) ?: resolver.javaClass
+        options.proxyHandlers.find { it.canHandle(resolver) }
+            ?.getTargetClass(resolver)
+            ?: resolver.javaClass
 }
 
 internal interface DataClassTypeResolverInfo {
     val dataClassType: Class<out Any>
 }
 
-internal class NormalResolverInfo(val resolver: GraphQLResolver<*>, private val options: SchemaParserOptions) : DataClassTypeResolverInfo, ResolverInfo() {
+internal class NormalResolverInfo(
+    val resolver: GraphQLResolver<*>,
+    options: SchemaParserOptions
+) : DataClassTypeResolverInfo, ResolverInfo() {
+
     val resolverType = getRealResolverClass(resolver, options)
     override val dataClassType = findDataClass()
 
     private fun findDataClass(): Class<out Any> {
-
         val type = TypeUtils.getTypeArguments(resolverType, GraphQLResolver::class.java)[GraphQLResolver::class.java.typeParameters[0]]
 
         if (type == null || type !is Class<*>) {
@@ -34,8 +42,8 @@ internal class NormalResolverInfo(val resolver: GraphQLResolver<*>, private val 
 
     override fun getFieldSearches(): List<FieldResolverScanner.Search> {
         return listOf(
-                FieldResolverScanner.Search(resolverType, this, resolver, dataClassType, true),
-                FieldResolverScanner.Search(dataClassType, this, null)
+            FieldResolverScanner.Search(resolverType, this, resolver, dataClassType),
+            FieldResolverScanner.Search(dataClassType, this, null)
         )
     }
 }
@@ -58,25 +66,28 @@ internal class MultiResolverInfo(val resolverInfoList: List<NormalResolverInfo>)
 
     override fun getFieldSearches(): List<FieldResolverScanner.Search> {
         return resolverInfoList
-                .asSequence()
-                .map { FieldResolverScanner.Search(it.resolverType, this, it.resolver, dataClassType, true) }
-                .plus(FieldResolverScanner.Search(dataClassType, this, null))
-                .toList()
+            .asSequence()
+            .map { FieldResolverScanner.Search(it.resolverType, this, it.resolver, dataClassType) }
+            .plus(FieldResolverScanner.Search(dataClassType, this, null))
+            .toList()
     }
 }
 
-internal class RootResolverInfo(val resolvers: List<GraphQLRootResolver>, private val options: SchemaParserOptions) : ResolverInfo() {
+internal class RootResolverInfo(
+    val resolvers: List<GraphQLRootResolver>,
+    private val options: SchemaParserOptions
+) : ResolverInfo() {
     override fun getFieldSearches() =
-            resolvers.map { FieldResolverScanner.Search(getRealResolverClass(it, options), this, it) }
+        resolvers.map { FieldResolverScanner.Search(getRealResolverClass(it, options), this, it) }
 }
 
 internal class DataClassResolverInfo(private val dataClass: JavaType) : ResolverInfo() {
     override fun getFieldSearches() =
-            listOf(FieldResolverScanner.Search(dataClass, this, null))
+        listOf(FieldResolverScanner.Search(dataClass, this, null))
 }
 
 internal class MissingResolverInfo : ResolverInfo() {
     override fun getFieldSearches(): List<FieldResolverScanner.Search> = listOf()
 }
 
-class ResolverError(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+internal class ResolverError(message: String, cause: Throwable? = null) : RuntimeException(message, cause)

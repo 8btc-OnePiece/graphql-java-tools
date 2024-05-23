@@ -1,6 +1,8 @@
 package graphql.kickstart.tools
 
-import graphql.kickstart.tools.util.BiMap
+import graphql.kickstart.tools.resolver.FieldResolver
+import graphql.kickstart.tools.resolver.FieldResolverScanner
+import graphql.kickstart.tools.util.*
 import graphql.language.*
 import graphql.schema.GraphQLScalarType
 import graphql.schema.idl.ScalarInfo
@@ -10,8 +12,13 @@ import java.lang.reflect.Method
 /**
  * @author Andrew Potter
  */
-internal class SchemaClassScanner(private val initialDictionary: SchemaParserDictionary, allDefinitions: List<Definition<*>>, resolvers: List<GraphQLResolver<*>>, private val scalars: CustomScalarMap, private val options: SchemaParserOptions) {
-
+internal class SchemaClassScanner(
+    private val initialDictionary: SchemaParserDictionary,
+    allDefinitions: List<Definition<*>>,
+    resolvers: List<GraphQLResolver<*>>,
+    private val scalars: CustomScalarMap,
+    private val options: SchemaParserOptions
+) {
     companion object {
         val log = LoggerFactory.getLogger(SchemaClassScanner::class.java)!!
     }
@@ -27,8 +34,11 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
 
     private val extensionDefinitions = allDefinitions.filterIsInstance<ObjectTypeExtensionDefinition>()
     private val customDirectives = allDefinitions.filterIsInstance<DirectiveDefinition>()
+    private val inputExtensionDefinitions = allDefinitions.filterIsInstance<InputObjectTypeExtensionDefinition>()
+    private val directiveDefinitions = allDefinitions.filterIsInstance<DirectiveDefinition>()
+    private val scalarDefinitions = allDefinitions.filterIsInstance<ScalarTypeDefinition>()
 
-    private val definitionsByName = (allDefinitions.filterIsInstance<TypeDefinition<*>>() - extensionDefinitions).associateBy { it.name }
+    private val definitionsByName = (allDefinitions.filterIsInstance<TypeDefinition<*>>() - extensionDefinitions - inputExtensionDefinitions).associateBy { it.name }
     private val objectDefinitions = (allDefinitions.filterIsInstance<ObjectTypeDefinition>() - extensionDefinitions)
     private val objectDefinitionsByName = objectDefinitions.associateBy { it.name }
     private val interfaceDefinitionsByName = allDefinitions.filterIsInstance<InterfaceTypeDefinition>().associateBy { it.name }
@@ -65,12 +75,29 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         do {
             do {
                 // Require all implementors of discovered interfaces to be discovered or provided.
-                handleInterfaceOrUnionSubTypes(getAllObjectTypesImplementingDiscoveredInterfaces()) { "Object type '${it.name}' implements a known interface, but no class could be found for that type name.  Please pass a class for type '${it.name}' or its class path in the parser's dictionary" }
+                handleDictionaryTypes(getAllObjectTypesImplementingDiscoveredInterfaces()) { "Object type '${it.name}' implements a known interface, but no class could be found for that type name.  Please pass a class for type '${it.name}'  or its class path in the parser's dictionary." }
             } while (scanQueue())
 
             // Require all members of discovered unions to be discovered.
-            handleInterfaceOrUnionSubTypes(getAllObjectTypeMembersOfDiscoveredUnions()) { "Object type '${it.name}' is a member of a known union, but no class could be found for that type name.  Please pass a class for type '${it.name}' or its class path in the parser's dictionary." }
+            handleDictionaryTypes(getAllObjectTypeMembersOfDiscoveredUnions()) { "Object type '${it.name}' is a member of a known union, but no class could be found for that type name.  Please pass a class for type '${it.name}'  or its class path in the parser's dictionary." }
         } while (scanQueue())
+
+        // Find unused types and include them if required
+        if (options.includeUnusedTypes) {
+            do {
+                val unusedDefinitions = (definitionsByName.values - (dictionary.keys.toSet() + unvalidatedTypes))
+                    .filter { definition -> definition.name != "PageInfo" }
+                    .filterIsInstance<ObjectTypeDefinition>().distinct()
+
+                if (unusedDefinitions.isEmpty()) {
+                    break
+                }
+
+                val unusedDefinition = unusedDefinitions.first()
+
+                handleDictionaryTypes(listOf(unusedDefinition)) { "Object type '${it.name}' is unused and includeUnusedTypes is true. Please pass a class for type '${it.name}' in the parser's dictionary." }
+            } while (scanQueue())
+        }
 
         return validateAndCreateResult(rootTypeHolder)
     }
@@ -101,6 +128,12 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
     }
 
     private fun validateAndCreateResult(rootTypeHolder: RootTypesHolder): ScannedSchemaObjects {
+//        initialDictionary
+//            .filter { !it.value.accessed }
+//            .forEach {
+//                log.warn("Dictionary mapping was provided but never used, and can be safely deleted: \"${it.key}\" -> ${it.value.get().name}")
+//            }
+
         val observedDefinitions = dictionary.keys.toSet() + unvalidatedTypes
 
         // The dictionary doesn't need to know what classes are used with scalars.
@@ -109,13 +142,14 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         // Union types can also be excluded, as their possible types are resolved recursively later
         val dictionary = try {
             BiMap.unmodifiableBiMap(BiMap.create<TypeDefinition<*>, JavaType>().also {
-                dictionary.filter {
-                    it.value.javaType != null
+                dictionary
+                    .filter {
+                        it.value.javaType != null
                             && it.value.typeClass() != java.lang.Object::class.java
                             && !java.util.Map::class.java.isAssignableFrom(it.value.typeClass())
                             && it.key !is InputObjectTypeDefinition
                             && it.key !is UnionTypeDefinition
-                }.mapValuesTo(it) { it.value.javaType }
+                    }.mapValuesTo(it) { it.value.javaType }
             })
         } catch (t: Throwable) {
             throw SchemaClassScannerError("Error creating bimap of type => class", t)
@@ -123,28 +157,27 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         val scalarDefinitions = observedDefinitions.filterIsInstance<ScalarTypeDefinition>()
 
         // Ensure all scalar definitions have implementations and add the definition to those.
-        val scalars = scalarDefinitions.filter {
-            // Filter for any defined scalars OR scalars that aren't defined but also aren't standard
-            scalars.containsKey(it.name) || !ScalarInfo.STANDARD_SCALAR_DEFINITIONS.containsKey(it.name)
-        }.map { definition ->
-            val provided = scalars[definition.name]
+        val scalars = scalarDefinitions
+            .filter {
+                // Filter for any defined scalars OR scalars that aren't defined but also aren't standard
+                scalars.containsKey(it.name) || !ScalarInfo.GRAPHQL_SPECIFICATION_SCALARS_DEFINITIONS.containsKey(it.name)
+            }.map { definition ->
+                val provided = scalars[definition.name]
                     ?: throw SchemaClassScannerError("Expected a user-defined GraphQL scalar type with name '${definition.name}' but found none!")
-            GraphQLScalarType.newScalar()
+                GraphQLScalarType.newScalar()
                     .name(provided.name)
-                    .description(
-                            if (definition.description != null) definition.description.content
-                            else SchemaParser.getDocumentation(definition) ?: provided.description)
+                    .description(getDocumentation(definition, options) ?: provided.description)
                     .coercing(provided.coercing)
                     .definition(definition)
                     .build()
-        }.associateBy { it.name!! }
+            }.associateBy { it.name!! }
 
         val unusedDefinitions = (definitionsByName.values - observedDefinitions).toSet()
         unusedDefinitions
-                .filter { definition -> definition.name != "PageInfo" }
-                .forEach { definition ->
-                    log.warn("Schema type was defined but can never be accessed, and can be safely deleted: ${definition.name}")
-                }
+            .filter { definition -> definition.name != "PageInfo" }
+            .forEach { definition ->
+                log.warn("Schema type was defined but can never be accessed, and can be safely deleted: ${definition.name}")
+            }
 
         val fieldResolvers = fieldResolversByType.flatMap { it.value.map { it.value } }
         val observedNormalResolverInfos = fieldResolvers.map { it.resolverInfo }.distinct().filterIsInstance<NormalResolverInfo>()
@@ -158,7 +191,9 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         validateRootResolversWereUsed(rootTypeHolder.mutation, fieldResolvers)
         validateRootResolversWereUsed(rootTypeHolder.subscription, fieldResolvers)
 
-        return ScannedSchemaObjects(dictionary, observedDefinitions + extensionDefinitions, scalars, customDirectives, rootInfo, fieldResolversByType.toMap(), unusedDefinitions)
+        val definitions = observedDefinitions + extensionDefinitions + inputExtensionDefinitions + directiveDefinitions
+
+        return ScannedSchemaObjects(dictionary, definitions, scalars, customDirectives,rootInfo, fieldResolversByType.toMap(), unusedDefinitions)
     }
 
     private fun validateRootResolversWereUsed(rootType: RootType?, fieldResolvers: List<FieldResolver>) {
@@ -185,17 +220,18 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         return dictionary.keys.filterIsInstance<UnionTypeDefinition>().map { union ->
             union.memberTypes.filterIsInstance<TypeName>().filter { !unionTypeNames.contains(it.name) }.map {
                 objectDefinitionsByName[it.name]
-                        ?: throw SchemaClassScannerError("No object type found with name '${it.name}' for union: $union")
+                    ?: throw SchemaClassScannerError("No object type found with name '${it.name}' for union: $union")
             }
         }.flatten().distinct()
     }
 
-    private fun handleInterfaceOrUnionSubTypes(types: List<ObjectTypeDefinition>, failureMessage: (ObjectTypeDefinition) -> String) {
+    private fun handleDictionaryTypes(types: List<ObjectTypeDefinition>, failureMessage: (ObjectTypeDefinition) -> String) {
         types.forEach { type ->
             val dictionaryContainsType = dictionary.filter { it.key.name == type.name }.isNotEmpty()
             if (!unvalidatedTypes.contains(type) && !dictionaryContainsType) {
-                val clazz = initialDictionary.get(type.name) ?: throw SchemaClassScannerError(failureMessage(type))
-                handleFoundType(type, clazz, DictionaryReference())
+                val initialEntry = initialDictionary[type.name]
+                    ?: throw SchemaClassScannerError(failureMessage(type))
+                handleFoundType(type, initialEntry.get(), DictionaryReference())
             }
         }
     }
@@ -217,48 +253,28 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         val resolverInfo: ResolverInfo = (if (resolverInfoList.size > 1) {
             MultiResolverInfo(resolverInfoList)
         } else {
-            if (item.clazz.equals(Object::class.java)) {
+            if (item.clazz == Object::class.java) {
                 getResolverInfoFromTypeDictionary(item.type.name)
             } else {
                 resolverInfosByDataClass[item.clazz] ?: DataClassResolverInfo(item.clazz)
             }
         })
-                ?: throw throw SchemaClassScannerError("The GraphQL schema type '${item.type.name}' maps to a field of type java.lang.Object however there is no matching entry for this type in the type dictionary. You may need to add this type to the dictionary before building the schema.")
+            ?: throw throw SchemaClassScannerError("The GraphQL schema type '${item.type.name}' maps to a field of type java.lang.Object however there is no matching entry for this type in the type dictionary. You may need to add this type to the dictionary before building the schema.")
 
         scanResolverInfoForPotentialMatches(item.type, resolverInfo)
     }
 
     private fun scanResolverInfoForPotentialMatches(type: ObjectTypeDefinition, resolverInfo: ResolverInfo) {
         type.getExtendedFieldDefinitions(extensionDefinitions).forEach { field ->
-            //            val searchField = applyDirective(field)
             val fieldResolver = fieldResolverScanner.findFieldResolver(field, resolverInfo)
 
             fieldResolversByType.getOrPut(type) { mutableMapOf() }[fieldResolver.field] = fieldResolver
 
             fieldResolver.scanForMatches().forEach { potentialMatch ->
-                //                if (potentialMatch.graphQLType is TypeName && !definitionsByName.containsKey((potentialMatch.graphQLType.name))) {
-//                    val typeDefinition = ObjectTypeDefinition.newObjectTypeDefinition()
-//                            .name(potentialMatch.graphQLType.name)
-//                            .build()
-//                    handleFoundType(TypeClassMatcher.ValidMatch(typeDefinition, typeClassMatcher.toRealType(potentialMatch), potentialMatch.reference))
-//                } else {
                 handleFoundType(typeClassMatcher.match(potentialMatch))
-//                }
             }
         }
     }
-
-//    private fun applyDirective(field: FieldDefinition): FieldDefinition {
-//        val connectionDirectives = field.directives.filter { it.name == "connection" }
-//        if (connectionDirectives.isNotEmpty()) {
-//            val directive = connectionDirectives.first()
-//            val originalType:TypeName = field.type as TypeName
-//            val wrappedField = field.deepCopy()
-//            wrappedField.type = TypeName(originalType.name + "Connection")
-//            return wrappedField
-//        }
-//        return field
-//    }
 
     private fun handleFoundType(match: TypeClassMatcher.Match) {
         when (match) {
@@ -317,27 +333,29 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
             }
 
             is InputObjectTypeDefinition -> {
-                graphQLType.inputValueDefinitions.forEach { inputValueDefinition ->
-                    val inputGraphQLType = inputValueDefinition.type.unwrap()
-                    if (inputGraphQLType is TypeName && !ScalarInfo.STANDARD_SCALAR_DEFINITIONS.containsKey(inputGraphQLType.name)) {
-                        val inputValueJavaType = findInputValueType(inputValueDefinition.name, inputGraphQLType, javaType.unwrap())
-                        if (inputValueJavaType != null) {
-                            handleFoundType(typeClassMatcher.match(TypeClassMatcher.PotentialMatch.parameterType(
+                val inputObjectTypes = listOf(graphQLType) + inputExtensionDefinitions.filter { it.name == graphQLType.name }
+                inputObjectTypes
+                    .flatMap { it.inputValueDefinitions }
+                    .forEach { inputValueDefinition ->
+                        val inputGraphQLType = inputValueDefinition.type.unwrap()
+                        if (inputGraphQLType is TypeName && !ScalarInfo.GRAPHQL_SPECIFICATION_SCALARS_DEFINITIONS.containsKey(inputGraphQLType.name)) {
+                            val inputValueJavaType = findInputValueType(inputValueDefinition.name, inputGraphQLType, javaType.unwrap())
+                            if (inputValueJavaType != null) {
+                                handleFoundType(typeClassMatcher.match(TypeClassMatcher.PotentialMatch.parameterType(
                                     inputValueDefinition.type,
                                     inputValueJavaType,
                                     GenericType(javaType, options).relativeToType(inputValueJavaType),
-                                    InputObjectReference(inputValueDefinition),
-                                    false
-                            )))
-                        } else {
-                            var mappingAdvice = "Try adding it manually to the dictionary"
-                            if (javaType.unwrap().name.contains("Map")) {
-                                mappingAdvice = " or add a class to represent your input type instead of a Map."
+                                    InputObjectReference(inputValueDefinition)
+                                )))
+                            } else {
+                                var mappingAdvice = "Try adding it manually to the dictionary"
+                                if (javaType.unwrap().name.contains("Map")) {
+                                    mappingAdvice = " or add a class to represent your input type instead of a Map."
+                                }
+                                log.warn("Cannot find definition for field '${inputValueDefinition.name}: ${inputGraphQLType.name}' on input type '${graphQLType.name}' -> ${javaType.unwrap().name}. $mappingAdvice")
                             }
-                            log.warn("Cannot find definition for field '${inputValueDefinition.name}: ${inputGraphQLType.name}' on input type '${graphQLType.name}' -> ${javaType.unwrap().name}. $mappingAdvice")
                         }
                     }
-                }
             }
         }
     }
@@ -346,7 +364,7 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         graphQLType.implements.forEach {
             if (it is TypeName) {
                 handleFoundType(interfaceDefinitionsByName[it.name]
-                        ?: throw SchemaClassScannerError("Object type ${graphQLType.name} declared interface ${it.name}, but no interface with that name was found in the schema!"), null, InterfaceReference(graphQLType))
+                    ?: throw SchemaClassScannerError("Object type ${graphQLType.name} declared interface ${it.name}, but no interface with that name was found in the schema!"), null, InterfaceReference(graphQLType))
             }
         }
     }
@@ -368,7 +386,7 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         val methods = clazz.methods
 
         val filteredMethods = methods.filter {
-            it.name == name || it.name == "get${name.capitalize()}"
+            it.name == name || it.name == "get${name.replaceFirstChar(Char::titlecase)}"
         }.sortedBy { it.name.length }
         return filteredMethods.find {
             !it.isSynthetic
@@ -431,7 +449,17 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         override fun getDescription() = "input object $type"
     }
 
-    class ReturnValueReference(private val method: Method) : Reference() {
+    private class InitialDictionaryEntry(private val clazz: Class<*>) {
+        var accessed = false
+            private set
+
+        fun get(): Class<*> {
+            accessed = true
+            return clazz
+        }
+    }
+
+    internal class ReturnValueReference(private val method: Method) : Reference() {
         fun getMethod() = method
         override fun getDescription() = "return type of method $method"
     }
@@ -440,7 +468,7 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         override fun getDescription() = "no custom reference method found"
     }
 
-    class MethodParameterReference(private val method: Method, private val index: Int) : Reference() {
+    internal class MethodParameterReference(private val method: Method, private val index: Int) : Reference() {
         override fun getDescription() = "parameter $index of method $method"
     }
 
@@ -448,11 +476,19 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         override fun getDescription() = "no custom reference method found"
     }
 
-    class FieldTypeReference(private val field: String) : Reference() {
+
+    internal class FieldTypeReference(private val field: String) : Reference() {
         override fun getDescription() = "type of field $field"
     }
 
-    class RootTypesHolder(options: SchemaParserOptions, rootInfo: RootTypeInfo, definitionsByName: Map<String, TypeDefinition<*>>, queryResolvers: List<GraphQLQueryResolver>, mutationResolvers: List<GraphQLMutationResolver>, subscriptionResolvers: List<GraphQLSubscriptionResolver>) {
+    private class RootTypesHolder(
+        options: SchemaParserOptions,
+        rootInfo: RootTypeInfo,
+        definitionsByName: Map<String, TypeDefinition<*>>,
+        queryResolvers: List<GraphQLQueryResolver>,
+        mutationResolvers: List<GraphQLMutationResolver>,
+        subscriptionResolvers: List<GraphQLSubscriptionResolver>
+    ) {
         private val queryName = rootInfo.getQueryName()
         private val mutationName = rootInfo.getMutationName()
         private val subscriptionName = rootInfo.getSubscriptionName()
@@ -491,7 +527,7 @@ internal class SchemaClassScanner(private val initialDictionary: SchemaParserDic
         }
     }
 
-    class RootType(val name: String, val type: ObjectTypeDefinition, val resolvers: List<GraphQLRootResolver>, val resolverInterface: Class<*>, val resolverInfo: RootResolverInfo)
+    internal class RootType(val name: String, val type: ObjectTypeDefinition, val resolvers: List<GraphQLRootResolver>, val resolverInterface: Class<*>, val resolverInfo: RootResolverInfo)
 }
 
-class SchemaClassScannerError(message: String, throwable: Throwable? = null) : RuntimeException(message, throwable)
+internal class SchemaClassScannerError(message: String, throwable: Throwable? = null) : RuntimeException(message, throwable)

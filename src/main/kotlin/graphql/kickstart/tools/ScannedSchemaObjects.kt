@@ -1,9 +1,12 @@
 package graphql.kickstart.tools
 
+import graphql.kickstart.tools.resolver.FieldResolver
 import graphql.kickstart.tools.util.BiMap
+import graphql.kickstart.tools.util.JavaType
 import graphql.language.DirectiveDefinition
 import graphql.language.FieldDefinition
 import graphql.language.ObjectTypeDefinition
+import graphql.language.SDLNamedDefinition
 import graphql.language.TypeDefinition
 import graphql.schema.GraphQLScalarType
 
@@ -12,7 +15,7 @@ import graphql.schema.GraphQLScalarType
  */
 internal data class ScannedSchemaObjects(
     val dictionary: TypeClassDictionary,
-    val definitions: Set<TypeDefinition<*>>,
+    val definitions: Set<SDLNamedDefinition<*>>,
     val customScalars: CustomScalarMap,
     val customDirectives: List<DirectiveDefinition>,
     val rootInfo: RootTypeInfo,

@@ -1,7 +1,10 @@
 package graphql.kickstart.tools
 
 import com.fasterxml.classmate.ResolvedType
+import graphql.kickstart.tools.util.JavaType
+import graphql.kickstart.tools.util.ParameterizedTypeImpl
 import graphql.kickstart.tools.util.Primitives
+import graphql.kickstart.tools.util.unwrap
 import org.apache.commons.lang3.reflect.TypeUtils
 import java.lang.reflect.ParameterizedType
 import java.lang.reflect.TypeVariable
@@ -13,7 +16,7 @@ import java.lang.reflect.WildcardType
 internal open class GenericType(protected val mostSpecificType: JavaType, protected val options: SchemaParserOptions) {
 
     fun isTypeAssignableFromRawClass(type: ParameterizedType, clazz: Class<*>) =
-            clazz.isAssignableFrom(getRawClass(type.rawType))
+        clazz.isAssignableFrom(getRawClass(type.rawType))
 
     fun getRawClass() = getRawClass(mostSpecificType)
 
@@ -84,7 +87,8 @@ internal open class GenericType(protected val mostSpecificType: JavaType, protec
             return when (type) {
                 is ParameterizedType -> {
                     val rawType = type.rawType
-                    val genericType = options.genericWrappers.find { it.type == rawType } ?: return type
+                    val genericType = options.genericWrappers.find { it.type == rawType }
+                        ?: return type
 
                     val typeArguments = type.actualTypeArguments
                     if (typeArguments.size <= genericType.index) {
@@ -103,32 +107,32 @@ internal open class GenericType(protected val mostSpecificType: JavaType, protec
                     }
                 }
                 is WildcardType -> type.upperBounds.firstOrNull()
-                        ?: throw error("Unable to unwrap type, wildcard has no upper bound: $type")
+                    ?: throw error("Unable to unwrap type, wildcard has no upper bound: $type")
                 is Class<*> -> if (type.isPrimitive) Primitives.wrap(type) else type
                 else -> error("Unable to unwrap type: $type")
             }
         }
 
         private fun parameterizedDeclaringTypeOrSuperType(declaringType: JavaType): ParameterizedType? =
-                if (declaringType is ParameterizedType) {
-                    declaringType
+            if (declaringType is ParameterizedType) {
+                declaringType
+            } else {
+                val superclass = declaringType.unwrap().genericSuperclass
+                if (superclass != null) {
+                    parameterizedDeclaringTypeOrSuperType(superclass)
                 } else {
-                    val superclass = declaringType.unwrap().genericSuperclass
-                    if (superclass != null) {
-                        parameterizedDeclaringTypeOrSuperType(superclass)
-                    } else {
-                        null
-                    }
+                    null
                 }
+            }
 
         private fun unwrapGenericType(declaringType: ParameterizedType, type: TypeVariable<*>): JavaType {
             val rawClass = getRawClass(mostSpecificType)
             val arguments = TypeUtils.determineTypeArguments(rawClass, declaringType)
             val matchingType = arguments
-                    .filter { it.key.name == type.name }
-                    .values
-                    .firstOrNull()
-                    ?: error("No type variable found for: ${TypeUtils.toLongString(type)}")
+                .filter { it.key.name == type.name }
+                .values
+                .firstOrNull()
+                ?: error("No type variable found for: ${TypeUtils.toLongString(type)}")
 
             return unwrapGenericType(matchingType)
         }
@@ -137,14 +141,14 @@ internal open class GenericType(protected val mostSpecificType: JavaType, protec
             return when (type) {
                 is ParameterizedType -> {
                     val actualTypeArguments = type.actualTypeArguments.map { replaceTypeVariable(it) }.toTypedArray()
-                    ParameterizedTypeImpl.make(type.rawType as Class<*>?, actualTypeArguments, type.ownerType)
+                    ParameterizedTypeImpl(type.rawType as Class<*>, actualTypeArguments, type.ownerType)
                 }
                 is ResolvedType -> {
                     if (type.typeParameters.isEmpty()) {
                         type.erasedType
                     } else {
                         val actualTypeArguments = type.typeParameters.map { replaceTypeVariable(it) }.toTypedArray()
-                        ParameterizedTypeImpl.make(type.erasedType, actualTypeArguments, null)
+                        ParameterizedTypeImpl(type.erasedType, actualTypeArguments, null)
                     }
                 }
                 is TypeVariable<*> -> {
@@ -159,6 +163,5 @@ internal open class GenericType(protected val mostSpecificType: JavaType, protec
                 }
             }
         }
-
     }
 }

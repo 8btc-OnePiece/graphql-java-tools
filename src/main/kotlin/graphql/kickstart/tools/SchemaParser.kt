@@ -1,11 +1,15 @@
 package graphql.kickstart.tools
 
 import graphql.introspection.Introspection
+import graphql.kickstart.tools.directive.DirectiveWiringHelper
+import graphql.kickstart.tools.util.getDocumentation
+import graphql.kickstart.tools.util.getExtendedFieldDefinitions
+import graphql.kickstart.tools.util.unwrap
 import graphql.language.*
 import graphql.schema.*
 import graphql.schema.idl.RuntimeWiring
 import graphql.schema.idl.ScalarInfo
-import graphql.schema.idl.SchemaGeneratorHelper
+import graphql.schema.visibility.NoIntrospectionGraphqlFieldVisibility
 import org.slf4j.LoggerFactory
 import java.util.*
 import java.util.stream.Collectors
@@ -16,19 +20,16 @@ import kotlin.reflect.KClass
  *
  * @author Andrew Potter
  */
-class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, private val options: SchemaParserOptions, private val runtimeWiring: RuntimeWiring) {
+class SchemaParser internal constructor(
+    scanResult: ScannedSchemaObjects,
+    private val options: SchemaParserOptions,
+    private val runtimeWiring: RuntimeWiring
+) {
+    private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
-        val log = LoggerFactory.getLogger(SchemaClassScanner::class.java)!!
-        const val DEFAULT_DEPRECATION_MESSAGE = "No longer supported"
-
         @JvmStatic
         fun newParser() = SchemaParserBuilder()
-
-        internal fun getDocumentation(node: AbstractNode<*>): String? = node.comments?.asSequence()
-                ?.filter { !it.content.startsWith("#") }
-                ?.joinToString("\n") { it.content.trimEnd() }
-                ?.trimIndent()
     }
 
     private val dictionary = scanResult.dictionary
@@ -40,41 +41,53 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
     private val unusedDefinitions = scanResult.unusedDefinitions
 
     private val extensionDefinitions = definitions.filterIsInstance<ObjectTypeExtensionDefinition>()
+    private val inputExtensionDefinitions = definitions.filterIsInstance<InputObjectTypeExtensionDefinition>()
 
     private val objectDefinitions = (definitions.filterIsInstance<ObjectTypeDefinition>() - extensionDefinitions)
-    private val inputObjectDefinitions = definitions.filterIsInstance<InputObjectTypeDefinition>()
+    private val inputObjectDefinitions = (definitions.filterIsInstance<InputObjectTypeDefinition>() - inputExtensionDefinitions)
     private val enumDefinitions = definitions.filterIsInstance<EnumTypeDefinition>()
     private val interfaceDefinitions = definitions.filterIsInstance<InterfaceTypeDefinition>()
+    private val directiveDefinitions = definitions.filterIsInstance<DirectiveDefinition>()
 
     private val unionDefinitions = definitions.filterIsInstance<UnionTypeDefinition>()
 
     private val permittedTypesForObject: Set<String> = (objectDefinitions.map { it.name } +
-            enumDefinitions.map { it.name } +
-            interfaceDefinitions.map { it.name } +
-            unionDefinitions.map { it.name }).toSet()
+        enumDefinitions.map { it.name } +
+        interfaceDefinitions.map { it.name } +
+        unionDefinitions.map { it.name }).toSet()
     private val permittedTypesForInputObject: Set<String> =
-            (inputObjectDefinitions.map { it.name } + enumDefinitions.map { it.name }).toSet()
-
-    private val schemaGeneratorHelper = SchemaGeneratorHelper()
-    private val directiveGenerator = DirectiveBehavior()
+        (inputObjectDefinitions.map { it.name } + enumDefinitions.map { it.name }).toSet()
 
     private val codeRegistryBuilder = GraphQLCodeRegistry.newCodeRegistry()
+    private val directiveWiringHelper = DirectiveWiringHelper(options, runtimeWiring, codeRegistryBuilder, directiveDefinitions)
 
     /**
      * Parses the given schema with respect to the given dictionary and returns GraphQL objects.
      */
     fun parseSchemaObjects(): SchemaObjects {
+        if (!options.introspectionEnabled) {
+            codeRegistryBuilder.fieldVisibility(NoIntrospectionGraphqlFieldVisibility.NO_INTROSPECTION_FIELD_VISIBILITY)
+        }
+        // this overrides the above introspection enabled setting obviously... todo: add documentation
+        options.fieldVisibility?.let { codeRegistryBuilder.fieldVisibility(it) }
 
         // Create GraphQL objects
-        val interfaces = interfaceDefinitions.map { createInterfaceObject(it) }
-        val objects = objectDefinitions.map { createObject(it, interfaces) }
+        val inputObjects: MutableList<GraphQLInputObjectType> = mutableListOf()
+        inputObjectDefinitions.forEach {
+            if (inputObjects.none { io -> io.name == it.name }) {
+                inputObjects.add(createInputObject(it, inputObjects, mutableSetOf()))
+            }
+        }
+        val interfaces = interfaceDefinitions.map { createInterfaceObject(it, inputObjects) }
+        val objects = objectDefinitions.map { createObject(it, interfaces, inputObjects) }
         val unions = unionDefinitions.map { createUnionObject(it, objects) }
-        val inputObjects = inputObjectDefinitions.map { createInputObject(it) }
         val enums = enumDefinitions.map { createEnumObject(it) }
 
+        val directives = directiveDefinitions.map { createDirective(it, inputObjects) }.toSet()
+
         // Assign type resolver to interfaces now that we know all of the object types
-        interfaces.forEach { codeRegistryBuilder.typeResolver(it, InterfaceTypeResolver(dictionary.inverse(), it, objects)) }
-        unions.forEach { codeRegistryBuilder.typeResolver(it, UnionTypeResolver(dictionary.inverse(), it, objects)) }
+        interfaces.forEach { codeRegistryBuilder.typeResolver(it, InterfaceTypeResolver(dictionary.inverse(), it)) }
+        unions.forEach { codeRegistryBuilder.typeResolver(it, UnionTypeResolver(dictionary.inverse(), it)) }
 
         // Find query type and mutation/subscription type (if mutation/subscription type exists)
         val queryName = rootInfo.getQueryName()
@@ -82,22 +95,23 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
         val subscriptionName = rootInfo.getSubscriptionName()
 
         val query = objects.find { it.name == queryName }
-                ?: throw SchemaError("Expected a Query object with name '$queryName' but found none!")
+            ?: throw SchemaError("Expected a Query object with name '$queryName' but found none!")
         val mutation = objects.find { it.name == mutationName }
-                ?: if (rootInfo.isMutationRequired()) throw SchemaError("Expected a Mutation object with name '$mutationName' but found none!") else null
+            ?: if (rootInfo.isMutationRequired()) throw SchemaError("Expected a Mutation object with name '$mutationName' but found none!") else null
         val subscription = objects.find { it.name == subscriptionName }
-                ?: if (rootInfo.isSubscriptionRequired()) throw SchemaError("Expected a Subscription object with name '$subscriptionName' but found none!") else null
+            ?: if (rootInfo.isSubscriptionRequired()) throw SchemaError("Expected a Subscription object with name '$subscriptionName' but found none!") else null
 
         val additionalObjects = objects.filter { o -> o != query && o != subscription && o != mutation }
 
         val types = (additionalObjects.toSet() as Set<GraphQLType>) + inputObjects + enums + interfaces + unions
+        return SchemaObjects(query, mutation, subscription, types, directives, codeRegistryBuilder, rootInfo.getDescription())
         return SchemaObjects(query, mutation, subscription, types, codeRegistryBuilder, buildCustomDirectiveSet())
     }
 
     /**
      * Parses the given schema with respect to the given dictionary and returns a GraphQLSchema
      */
-    fun makeExecutableSchema(): GraphQLSchema = parseSchemaObjects().toSchema(options.introspectionEnabled)
+    fun makeExecutableSchema(): GraphQLSchema = parseSchemaObjects().toSchema()
 
     /**
      * Returns any unused type definitions that were found in the schema
@@ -105,140 +119,132 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
     @Suppress("unused")
     fun getUnusedDefinitions(): Set<TypeDefinition<*>> = unusedDefinitions
 
-    private fun createObject(objectDefinition: ObjectTypeDefinition, interfaces: List<GraphQLInterfaceType>): GraphQLObjectType {
+    private fun createObject(objectDefinition: ObjectTypeDefinition, interfaces: List<GraphQLInterfaceType>, inputObjects: List<GraphQLInputObjectType>): GraphQLObjectType {
         val name = objectDefinition.name
         val builder = GraphQLObjectType.newObject()
-                .name(name)
-                .definition(objectDefinition)
-                .description(if (objectDefinition.description != null) objectDefinition.description.content else getDocumentation(objectDefinition))
-
-        builder.withDirectives(*buildDirectives(objectDefinition.directives, setOf(), Introspection.DirectiveLocation.OBJECT))
+            .name(name)
+            .definition(objectDefinition)
+            .description(getDocumentation(objectDefinition, options))
+            .withAppliedDirectives(*buildAppliedDirectives(objectDefinition.directives))
 
         objectDefinition.implements.forEach { implementsDefinition ->
             val interfaceName = (implementsDefinition as TypeName).name
             builder.withInterface(interfaces.find { it.name == interfaceName }
-                    ?: throw SchemaError("Expected interface type with name '$interfaceName' but found none!"))
+                ?: throw SchemaError("Expected interface type with name '$interfaceName' but found none!"))
         }
 
         objectDefinition.getExtendedFieldDefinitions(extensionDefinitions).forEach { fieldDefinition ->
-            fieldDefinition.description
             builder.field { field ->
-                createField(field, fieldDefinition)
+                createField(field, fieldDefinition, inputObjects)
                 codeRegistryBuilder.dataFetcher(
-                        FieldCoordinates.coordinates(objectDefinition.name, fieldDefinition.name),
-                        fieldResolversByType[objectDefinition]?.get(fieldDefinition)?.createDataFetcher()
-                                ?: throw SchemaError("No resolver method found for object type '${objectDefinition.name}' and field '${fieldDefinition.name}', this is most likely a bug with graphql-java-tools")
+                    FieldCoordinates.coordinates(objectDefinition.name, fieldDefinition.name),
+                    fieldResolversByType[objectDefinition]?.get(fieldDefinition)?.createDataFetcher()
+                        ?: throw SchemaError("No resolver method found for object type '${objectDefinition.name}' and field '${fieldDefinition.name}', this is most likely a bug with graphql-java-tools")
                 )
 
                 val wiredField = field.build()
                 GraphQLFieldDefinition.Builder(wiredField)
-                        .clearArguments()
-                        .arguments(wiredField.arguments)
+                    .clearArguments()
+                    .arguments(wiredField.arguments)
             }
         }
 
-        val objectType = builder.build()
-
-        return directiveGenerator.onObject(objectType, DirectiveBehavior.Params(runtimeWiring, codeRegistryBuilder))
+        return directiveWiringHelper.wireObject(builder.build())
     }
 
-    private fun buildDirectives(directives: List<Directive>, directiveDefinitions: Set<GraphQLDirective>, directiveLocation: Introspection.DirectiveLocation): Array<GraphQLDirective> {
-        val names = HashSet<String>()
+    private fun createInputObject(definition: InputObjectTypeDefinition, inputObjects: List<GraphQLInputObjectType>,
+                                  referencingInputObjects: MutableSet<String>): GraphQLInputObjectType {
+        val extensionDefinitions = inputExtensionDefinitions.filter { it.name == definition.name }
 
-        val output = ArrayList<GraphQLDirective>()
-        for (directive in directives) {
-            if (!names.contains(directive.name)) {
-                names.add(directive.name)
-                output.add(schemaGeneratorHelper.buildDirective(directive, directiveDefinitions, directiveLocation, runtimeWiring.comparatorRegistry))
-            }
-        }
-        return output.toTypedArray()
-    }
-
-    private fun createInputObject(definition: InputObjectTypeDefinition): GraphQLInputObjectType {
         val builder = GraphQLInputObjectType.newInputObject()
-                .name(definition.name)
-                .definition(definition)
-                .description(if (definition.description != null) definition.description.content else getDocumentation(definition))
+            .name(definition.name)
+            .definition(definition)
+            .extensionDefinitions(extensionDefinitions)
+            .description(getDocumentation(definition, options))
+            .withAppliedDirectives(*buildAppliedDirectives(definition.directives))
 
-        builder.withDirectives(*buildDirectives(definition.directives, setOf(), Introspection.DirectiveLocation.INPUT_OBJECT))
+        referencingInputObjects.add(definition.name)
 
-        definition.inputValueDefinitions.forEach { inputDefinition ->
-            val fieldBuilder = GraphQLInputObjectField.newInputObjectField()
+        (extensionDefinitions + definition).forEach {
+            it.inputValueDefinitions.forEach { inputDefinition ->
+                val fieldBuilder = GraphQLInputObjectField.newInputObjectField()
                     .name(inputDefinition.name)
                     .definition(inputDefinition)
-                    .description(if (inputDefinition.description != null) inputDefinition.description.content else getDocumentation(inputDefinition))
-                    .defaultValue(buildDefaultValue(inputDefinition.defaultValue))
-                    .type(determineInputType(inputDefinition.type))
-                    .withDirectives(*buildDirectives(inputDefinition.directives, setOf(), Introspection.DirectiveLocation.INPUT_FIELD_DEFINITION))
-            builder.field(fieldBuilder.build())
+                    .description(getDocumentation(inputDefinition, options))
+                    .apply { inputDefinition.defaultValue?.let { v -> defaultValueLiteral(v) } }
+                    .apply { getDeprecated(inputDefinition.directives)?.let { deprecate(it) } }
+                    .type(determineInputType(inputDefinition.type, inputObjects, referencingInputObjects))
+                    .withAppliedDirectives(*buildAppliedDirectives(inputDefinition.directives))
+                builder.field(fieldBuilder.build())
+            }
         }
 
-        return directiveGenerator.onInputObject(builder.build(), DirectiveBehavior.Params(runtimeWiring, codeRegistryBuilder))
+        return directiveWiringHelper.wireInputObject(builder.build())
     }
 
     private fun createEnumObject(definition: EnumTypeDefinition): GraphQLEnumType {
         val name = definition.name
-        val type = dictionary[definition] ?: throw SchemaError("Expected enum with name '$name' but found none!")
+        val type = dictionary[definition]
+            ?: throw SchemaError("Expected enum with name '$name' but found none!")
         if (!type.unwrap().isEnum) throw SchemaError("Type '$name' is declared as an enum in the GraphQL schema but is not a Java enum!")
 
         val builder = GraphQLEnumType.newEnum()
-                .name(name)
-                .definition(definition)
-                .description(if (definition.description != null) definition.description.content else getDocumentation(definition))
-
-        builder.withDirectives(*buildDirectives(definition.directives, setOf(), Introspection.DirectiveLocation.ENUM))
+            .name(name)
+            .definition(definition)
+            .description(getDocumentation(definition, options))
+            .withAppliedDirectives(*buildAppliedDirectives(definition.directives))
 
         definition.enumValueDefinitions.forEach { enumDefinition ->
             val enumName = enumDefinition.name
             val enumValue = type.unwrap().enumConstants.find { (it as Enum<*>).name == enumName }
-                    ?: throw SchemaError("Expected value for name '$enumName' in enum '${type.unwrap().simpleName}' but found none!")
+                ?: throw SchemaError("Expected value for name '$enumName' in enum '${type.unwrap().simpleName}' but found none!")
 
-            val enumValueDirectives = buildDirectives(enumDefinition.directives, setOf(), Introspection.DirectiveLocation.ENUM_VALUE)
-            getDeprecated(enumDefinition.directives).let {
-                val enumValueDefinition = GraphQLEnumValueDefinition.newEnumValueDefinition()
-                        .name(enumName)
-                        .description(if (enumDefinition.description != null) enumDefinition.description.content else getDocumentation(enumDefinition))
-                        .value(enumValue)
-                        .deprecationReason(it)
-                        .withDirectives(*enumValueDirectives)
-                        .definition(enumDefinition)
-                        .build()
+            val enumValueAppliedDirectives = buildAppliedDirectives(enumDefinition.directives)
+            val enumValueDefinition = GraphQLEnumValueDefinition.newEnumValueDefinition()
+                .name(enumName)
+                .description(getDocumentation(enumDefinition, options))
+                .value(enumValue)
+                .apply { getDeprecated(enumDefinition.directives)?.let { deprecationReason(it) } }
+                .withAppliedDirectives(*enumValueAppliedDirectives)
+                .definition(enumDefinition)
+                .build()
 
-                builder.value(enumValueDefinition)
-            }
+            builder.value(enumValueDefinition)
         }
 
-        return directiveGenerator.onEnum(builder.build(), DirectiveBehavior.Params(runtimeWiring, codeRegistryBuilder))
+        return directiveWiringHelper.wireEnum(builder.build())
     }
 
-    private fun createInterfaceObject(interfaceDefinition: InterfaceTypeDefinition): GraphQLInterfaceType {
+    private fun createInterfaceObject(interfaceDefinition: InterfaceTypeDefinition, inputObjects: List<GraphQLInputObjectType>): GraphQLInterfaceType {
         val name = interfaceDefinition.name
         val builder = GraphQLInterfaceType.newInterface()
-                .name(name)
-                .definition(interfaceDefinition)
-                .description(if (interfaceDefinition.description != null) interfaceDefinition.description.content else getDocumentation(interfaceDefinition))
-
-        builder.withDirectives(*buildDirectives(interfaceDefinition.directives, setOf(), Introspection.DirectiveLocation.INTERFACE))
+            .name(name)
+            .definition(interfaceDefinition)
+            .description(getDocumentation(interfaceDefinition, options))
+            .withAppliedDirectives(*buildAppliedDirectives(interfaceDefinition.directives))
 
         interfaceDefinition.fieldDefinitions.forEach { fieldDefinition ->
-            builder.field { field -> createField(field, fieldDefinition) }
+            builder.field { field -> createField(field, fieldDefinition, inputObjects) }
         }
 
-        return directiveGenerator.onInterface(builder.build(), DirectiveBehavior.Params(runtimeWiring, codeRegistryBuilder))
+        interfaceDefinition.implements.forEach { implementsDefinition ->
+            val interfaceName = (implementsDefinition as TypeName).name
+            builder.withInterface(GraphQLTypeReference(interfaceName))
+        }
+
+        return directiveWiringHelper.wireInterFace(builder.build())
     }
 
     private fun createUnionObject(definition: UnionTypeDefinition, types: List<GraphQLObjectType>): GraphQLUnionType {
         val name = definition.name
         val builder = GraphQLUnionType.newUnionType()
-                .name(name)
-                .definition(definition)
-                .description(if (definition.description != null) definition.description.content else getDocumentation(definition))
-
-        builder.withDirectives(*buildDirectives(definition.directives, setOf(), Introspection.DirectiveLocation.UNION))
+            .name(name)
+            .definition(definition)
+            .description(getDocumentation(definition, options))
+            .withAppliedDirectives(*buildAppliedDirectives(definition.directives))
 
         getLeafUnionObjects(definition, types).forEach { builder.possibleType(it) }
-        return directiveGenerator.onUnion(builder.build(), DirectiveBehavior.Params(runtimeWiring, codeRegistryBuilder))
+        return directiveWiringHelper.wireUnion(builder.build())
     }
 
     private fun getLeafUnionObjects(definition: UnionTypeDefinition, types: List<GraphQLObjectType>): List<GraphQLObjectType> {
@@ -254,45 +260,64 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
             if (nestedUnion != null) {
                 leafObjects.addAll(getLeafUnionObjects(nestedUnion, types))
             } else {
-                leafObjects.add(types.find { it.name == typeName }
-                        ?: throw SchemaError("Expected object type '$typeName' for union type '$name', but found none!"))
+                leafObjects.add(types.find { type -> type.name == typeName }
+                    ?: throw SchemaError("Expected object type '$typeName' for union type '$name', but found none!"))
             }
         }
         return leafObjects
     }
 
-    private fun createField(field: GraphQLFieldDefinition.Builder, fieldDefinition: FieldDefinition): GraphQLFieldDefinition.Builder {
-        field.name(fieldDefinition.name)
-        field.description(if (fieldDefinition.description != null) fieldDefinition.description.content else getDocumentation(fieldDefinition))
-        field.definition(fieldDefinition)
-        getDeprecated(fieldDefinition.directives)?.let { field.deprecate(it) }
-        field.type(determineOutputType(fieldDefinition.type))
+    private fun createField(field: GraphQLFieldDefinition.Builder, fieldDefinition: FieldDefinition, inputObjects: List<GraphQLInputObjectType>): GraphQLFieldDefinition.Builder {
+        field
+            .name(fieldDefinition.name)
+            .description(getDocumentation(fieldDefinition, options))
+            .definition(fieldDefinition)
+            .apply { getDeprecated(fieldDefinition.directives)?.let { deprecate(it) } }
+            .type(determineOutputType(fieldDefinition.type, inputObjects))
+            .withAppliedDirectives(*buildAppliedDirectives(fieldDefinition.directives))
+
         fieldDefinition.inputValueDefinitions.forEach { argumentDefinition ->
             val argumentBuilder = GraphQLArgument.newArgument()
-                    .name(argumentDefinition.name)
-                    .definition(argumentDefinition)
-                    .description(if (argumentDefinition.description != null) argumentDefinition.description.content else getDocumentation(argumentDefinition))
-                    .defaultValue(buildDefaultValue(argumentDefinition.defaultValue))
-                    .type(determineInputType(argumentDefinition.type))
-                    .withDirectives(*buildDirectives(argumentDefinition.directives, setOf(), Introspection.DirectiveLocation.ARGUMENT_DEFINITION))
+                .name(argumentDefinition.name)
+                .definition(argumentDefinition)
+                .description(getDocumentation(argumentDefinition, options))
+                .type(determineInputType(argumentDefinition.type, inputObjects, setOf()))
+                .apply { getDeprecated(argumentDefinition.directives)?.let { deprecate(it) } }
+                .apply { argumentDefinition.defaultValue?.let { defaultValueLiteral(it) } }
+                .withAppliedDirectives(*buildAppliedDirectives(argumentDefinition.directives))
+
             field.argument(argumentBuilder.build())
         }
-        field.withDirectives(*buildDirectives(fieldDefinition.directives, setOf(), Introspection.DirectiveLocation.FIELD_DEFINITION))
+
         return field
     }
 
-    private fun buildDefaultValue(value: Value<*>?): Any? {
-        return when (value) {
-            null -> null
-            is IntValue -> value.value
-            is FloatValue -> value.value
-            is StringValue -> value.value
-            is EnumValue -> value.name
-            is BooleanValue -> value.isValue
-            is ArrayValue -> value.values.map { buildDefaultValue(it) }
-            is ObjectValue -> value.objectFields.associate { it.name to buildDefaultValue(it.value) }
-            else -> throw SchemaError("Unrecognized default value: $value")
-        }
+    private fun createDirective(definition: DirectiveDefinition, inputObjects: List<GraphQLInputObjectType>): GraphQLDirective {
+        val locations = definition.directiveLocations.map { Introspection.DirectiveLocation.valueOf(it.name) }.toTypedArray()
+
+        val graphQLDirective = GraphQLDirective.newDirective()
+            .name(definition.name)
+            .description(getDocumentation(definition, options))
+            .definition(definition)
+            .comparatorRegistry(runtimeWiring.comparatorRegistry)
+            .validLocations(*locations)
+            .repeatable(definition.isRepeatable)
+            .apply {
+                definition.inputValueDefinitions.forEach { arg ->
+                    argument(GraphQLArgument.newArgument()
+                        .name(arg.name)
+                        .definition(arg)
+                        .description(getDocumentation(arg, options))
+                        .type(determineInputType(arg.type, inputObjects, setOf()))
+                        .apply { getDeprecated(arg.directives)?.let { deprecate(it) } }
+                        .apply { arg.defaultValue?.let { defaultValueLiteral(it) } }
+                        .withAppliedDirectives(*buildAppliedDirectives(arg.directives))
+                        .build())
+                }
+            }
+            .build()
+
+        return graphQLDirective
     }
 
     /**
@@ -325,49 +350,117 @@ class SchemaParser internal constructor(scanResult: ScannedSchemaObjects, privat
         return directiveSet
     }
 
-    private fun determineOutputType(typeDefinition: Type<*>) =
-            determineType(GraphQLOutputType::class, typeDefinition, permittedTypesForObject) as GraphQLOutputType
 
-    private fun determineInputType(typeDefinition: Type<*>) =
-            determineType(GraphQLInputType::class, typeDefinition, permittedTypesForInputObject) as GraphQLInputType
-
-    private fun <T : Any> determineType(expectedType: KClass<T>, typeDefinition: Type<*>, allowedTypeReferences: Set<String>): GraphQLType =
-            when (typeDefinition) {
-                is ListType -> GraphQLList(determineType(expectedType, typeDefinition.type, allowedTypeReferences))
-                is NonNullType -> GraphQLNonNull(determineType(expectedType, typeDefinition.type, allowedTypeReferences))
-                is TypeName -> {
-                    val scalarType = customScalars[typeDefinition.name] ?: graphQLScalars[typeDefinition.name]
-                    if (scalarType != null) {
-                        scalarType
-                    } else {
-                        if (!allowedTypeReferences.contains(typeDefinition.name)) {
-                            throw SchemaError("Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
-                                    "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?")
-                        }
-                        GraphQLTypeReference(typeDefinition.name)
+    private fun buildAppliedDirectives(directives: List<Directive>): Array<GraphQLAppliedDirective> {
+        return directives.map {
+            GraphQLAppliedDirective.newDirective()
+                .name(it.name)
+                .description(getDocumentation(it, options))
+                .comparatorRegistry(runtimeWiring.comparatorRegistry)
+                .apply {
+                    it.arguments.forEach { arg ->
+                        argument(GraphQLAppliedDirectiveArgument.newArgument()
+                            .name(arg.name)
+                            .type(directiveWiringHelper.buildDirectiveInputType(arg.value))
+                            .valueLiteral(arg.value)
+                            .build())
                     }
                 }
-                else -> throw SchemaError("Unknown type: $typeDefinition")
+                .build()
+        }.toTypedArray()
+    }
+
+    private fun determineOutputType(typeDefinition: Type<*>, inputObjects: List<GraphQLInputObjectType>) =
+        determineType(GraphQLOutputType::class, typeDefinition, permittedTypesForObject, inputObjects) as GraphQLOutputType
+
+    private fun <T : Any> determineType(expectedType: KClass<T>, typeDefinition: Type<*>, allowedTypeReferences: Set<String>, inputObjects: List<GraphQLInputObjectType>): GraphQLType =
+        when (typeDefinition) {
+            is ListType -> GraphQLList(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
+            is NonNullType -> GraphQLNonNull(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
+            is InputObjectTypeDefinition -> {
+                log.info("Create input object")
+                createInputObject(typeDefinition, inputObjects, mutableSetOf())
             }
+            is TypeName -> {
+                val scalarType = customScalars[typeDefinition.name]
+                    ?: GRAPHQL_SCALARS[typeDefinition.name]
+                if (scalarType != null) {
+                    scalarType
+                } else {
+                    if (!allowedTypeReferences.contains(typeDefinition.name)) {
+                        throw SchemaError("Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
+                            "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?")
+                    }
+                    inputObjects.find { it.name == typeDefinition.name } ?: GraphQLTypeReference(typeDefinition.name)
+                }
+            }
+            else -> throw SchemaError("Unknown type: $typeDefinition")
+        }
+
+    private fun determineInputType(typeDefinition: Type<*>, inputObjects: List<GraphQLInputObjectType>, referencingInputObjects: Set<String>) =
+        determineInputType(GraphQLInputType::class, typeDefinition, permittedTypesForInputObject, inputObjects, referencingInputObjects)
+
+    private fun <T : Any> determineInputType(expectedType: KClass<T>,
+                                             typeDefinition: Type<*>, allowedTypeReferences: Set<String>,
+                                             inputObjects: List<GraphQLInputObjectType>,
+                                             referencingInputObjects: Set<String>): GraphQLInputType =
+        when (typeDefinition) {
+            is ListType -> GraphQLList(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
+            is NonNullType -> GraphQLNonNull(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
+            is InputObjectTypeDefinition -> {
+                log.info("Create input object")
+                createInputObject(typeDefinition, inputObjects, referencingInputObjects as MutableSet<String>)
+            }
+            is TypeName -> {
+                val scalarType = customScalars[typeDefinition.name]
+                    ?: GRAPHQL_SCALARS[typeDefinition.name]
+                if (scalarType != null) {
+                    scalarType
+                } else {
+                    if (!allowedTypeReferences.contains(typeDefinition.name)) {
+                        throw SchemaError("Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
+                            "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?")
+                    }
+                    val found = inputObjects.filter { it.name == typeDefinition.name }
+                    if (found.size == 1) {
+                        found[0]
+                    } else {
+                        val filteredDefinitions = inputObjectDefinitions.filter { it.name == typeDefinition.name }
+                        if (filteredDefinitions.isNotEmpty()) {
+                            val referencingInputObject = referencingInputObjects.find { it == typeDefinition.name }
+                            if (referencingInputObject != null) {
+                                GraphQLTypeReference(referencingInputObject)
+                            } else {
+                                val inputObject = createInputObject(filteredDefinitions[0], inputObjects, referencingInputObjects as MutableSet<String>)
+                                (inputObjects as MutableList).add(inputObject)
+                                inputObject
+                            }
+                        } else {
+                            // todo: handle enum type
+                            GraphQLTypeReference(typeDefinition.name)
+                        }
+                    }
+                }
+            }
+            else -> throw SchemaError("Unknown type: $typeDefinition")
+        }
 
     /**
      * Returns an optional [String] describing a deprecated field/enum.
      * If a deprecation directive was defined using the @deprecated directive,
      * then a String containing either the contents of the 'reason' argument, if present, or a default
-     * message defined in [DEFAULT_DEPRECATION_MESSAGE] will be returned. Otherwise, [null] will be returned
+     * message defined in [DEFAULT_DEPRECATION_MESSAGE] will be returned. Otherwise, `null` will be returned
      * indicating no deprecation directive was found within the directives list.
      */
     private fun getDeprecated(directives: List<Directive>): String? =
-            getDirective(directives, "deprecated")?.let { directive ->
-                (directive.arguments.find { it.name == "reason" }?.value as? StringValue)?.value
-                        ?: DEFAULT_DEPRECATION_MESSAGE
-            }
-
-    private fun getDirective(directives: List<Directive>, name: String): Directive? = directives.find {
-        it.name == name
-    }
+        directives.find { it.name == "deprecated" }?.let { directive ->
+            (directive.arguments.find { it.name == "reason" }?.value as? StringValue)?.value
+                ?: DEFAULT_DEPRECATION_MESSAGE
+        }
 }
 
 class SchemaError(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
-val graphQLScalars = ScalarInfo.STANDARD_SCALARS.associateBy { it.name }
+val GRAPHQL_SCALARS = ScalarInfo.GRAPHQL_SPECIFICATION_SCALARS.associateBy { it.name }
+
+const val DEFAULT_DEPRECATION_MESSAGE = "No longer supported"

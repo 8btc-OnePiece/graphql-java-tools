@@ -1,6 +1,8 @@
 package graphql.kickstart.tools
 
 import graphql.execution.DataFetcherResult
+import graphql.kickstart.tools.util.GraphQLLangType
+import graphql.kickstart.tools.util.JavaType
 import graphql.language.*
 import graphql.schema.idl.ScalarInfo
 import java.lang.reflect.ParameterizedType
@@ -15,14 +17,10 @@ internal class TypeClassMatcher(private val definitionsByName: Map<String, TypeD
         fun isListType(realType: ParameterizedType, generic: GenericType) = generic.isTypeAssignableFromRawClass(realType, Iterable::class.java)
     }
 
-    private fun error(potentialMatch: PotentialMatch, msg: String) = SchemaClassScannerError("Unable to match type definition (${potentialMatch.graphQLType}) with java type (${potentialMatch.javaType}): $msg")
+    private fun error(potentialMatch: PotentialMatch, msg: String) = SchemaClassScannerError("Unable to match type definition (${potentialMatch.graphQLType}) for reference ${potentialMatch.reference} with java type (${potentialMatch.javaType}): $msg")
 
     fun match(potentialMatch: PotentialMatch): Match {
-        return if (potentialMatch.batched) {
-            match(stripBatchedType(potentialMatch)) // stripBatchedType sets 'batched' to false
-        } else {
-            match(potentialMatch, potentialMatch.graphQLType, potentialMatch.javaType, true)
-        }
+        return match(potentialMatch, potentialMatch.graphQLType, potentialMatch.javaType, true)
     }
 
     private fun match(potentialMatch: PotentialMatch, graphQLType: GraphQLLangType, javaType: JavaType, root: Boolean = false): Match {
@@ -32,10 +30,6 @@ internal class TypeClassMatcher(private val definitionsByName: Map<String, TypeD
         if (realType is ParameterizedType && potentialMatch.generic.isTypeAssignableFromRawClass(realType, DataFetcherResult::class.java)) {
             if (potentialMatch.location != Location.RETURN_TYPE) {
                 throw error(potentialMatch, "${DataFetcherResult::class.java.name} can only be used as a return type")
-            }
-
-            if (!root) {
-                throw error(potentialMatch, "${DataFetcherResult::class.java.name} can only be used at the top level of a return type")
             }
 
             realType = potentialMatch.generic.unwrapGenericType(realType.actualTypeArguments.first())
@@ -82,9 +76,9 @@ internal class TypeClassMatcher(private val definitionsByName: Map<String, TypeD
             }
 
             is TypeName -> {
-                val typeDefinition = ScalarInfo.STANDARD_SCALAR_DEFINITIONS[graphQLType.name]
-                        ?: definitionsByName[graphQLType.name]
-                        ?: throw error(potentialMatch, "No ${TypeDefinition::class.java.simpleName} for type name ${graphQLType.name}")
+                val typeDefinition = ScalarInfo.GRAPHQL_SPECIFICATION_SCALARS_DEFINITIONS[graphQLType.name]
+                    ?: definitionsByName[graphQLType.name]
+                    ?: throw error(potentialMatch, "No ${TypeDefinition::class.java.simpleName} for type name ${graphQLType.name}")
                 if (typeDefinition is ScalarTypeDefinition) {
                     ScalarMatch(typeDefinition)
                 } else {
@@ -99,35 +93,30 @@ internal class TypeClassMatcher(private val definitionsByName: Map<String, TypeD
 
     private fun isListType(realType: ParameterizedType, potentialMatch: PotentialMatch) = isListType(realType, potentialMatch.generic)
 
-    private fun stripBatchedType(potentialMatch: PotentialMatch): PotentialMatch {
-        return if (potentialMatch.location == Location.PARAMETER_TYPE) {
-            potentialMatch.copy(javaType = potentialMatch.javaType, batched = false)
-        } else {
-            val realType = potentialMatch.generic.unwrapGenericType(potentialMatch.javaType)
-            if (realType is ParameterizedType && isListType(realType, potentialMatch)) {
-                potentialMatch.copy(javaType = realType.actualTypeArguments.first(), batched = false)
-            } else {
-                throw error(potentialMatch, "Method was marked as @Batched but ${potentialMatch.location.prettyName} was not a list!")
-            }
-        }
-    }
-
     internal interface Match
+
     internal data class ScalarMatch(val type: ScalarTypeDefinition) : Match
+
     internal data class ValidMatch(val type: TypeDefinition<*>, val javaType: JavaType, val reference: SchemaClassScanner.Reference) : Match
+
     internal enum class Location(val prettyName: String) {
         RETURN_TYPE("return type"),
         PARAMETER_TYPE("parameter"),
     }
 
-    internal data class PotentialMatch(val graphQLType: GraphQLLangType, val javaType: JavaType, val generic: GenericType.RelativeTo, val reference: SchemaClassScanner.Reference, val location: Location, val batched: Boolean) {
+    internal data class PotentialMatch(
+        val graphQLType: GraphQLLangType,
+        val javaType: JavaType,
+        val generic: GenericType.RelativeTo,
+        val reference: SchemaClassScanner.Reference,
+        val location: Location
+    ) {
         companion object {
-            fun returnValue(graphQLType: GraphQLLangType, javaType: JavaType, generic: GenericType.RelativeTo, reference: SchemaClassScanner.Reference, batched: Boolean) =
-                    PotentialMatch(graphQLType, javaType, generic, reference, Location.RETURN_TYPE, batched)
+            fun returnValue(graphQLType: GraphQLLangType, javaType: JavaType, generic: GenericType.RelativeTo, reference: SchemaClassScanner.Reference) =
+                PotentialMatch(graphQLType, javaType, generic, reference, Location.RETURN_TYPE)
 
-            fun parameterType(graphQLType: GraphQLLangType, javaType: JavaType, generic: GenericType.RelativeTo, reference: SchemaClassScanner.Reference, batched: Boolean) =
-                    PotentialMatch(graphQLType, javaType, generic, reference, Location.PARAMETER_TYPE, batched)
+            fun parameterType(graphQLType: GraphQLLangType, javaType: JavaType, generic: GenericType.RelativeTo, reference: SchemaClassScanner.Reference) =
+                PotentialMatch(graphQLType, javaType, generic, reference, Location.PARAMETER_TYPE)
         }
     }
-
 }
