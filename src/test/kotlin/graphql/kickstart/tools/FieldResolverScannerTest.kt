@@ -16,7 +16,7 @@ import java.util.*
 class FieldResolverScannerTest {
 
     private val options = defaultOptions()
-    private val scanner = FieldResolverScanner(options)
+    private val scanner = FieldResolverScanner(SchemaParserDictionary(), options)
 
     @Test
     fun `scanner finds fields on multiple root types`() {
@@ -130,7 +130,7 @@ class FieldResolverScannerTest {
 
     class GenericQuery : GraphQLQueryResolver {
         fun getUsers(): Connection<User> {
-            return DefaultConnection(listOf(), DefaultPageInfo(null, null, false, false))
+            return DefaultConnection(listOf(), DefaultPageInfo(0,null, null, false, false))
         }
     }
 

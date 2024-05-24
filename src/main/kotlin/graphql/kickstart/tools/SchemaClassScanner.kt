@@ -229,9 +229,13 @@ internal class SchemaClassScanner(
         types.forEach { type ->
             val dictionaryContainsType = dictionary.filter { it.key.name == type.name }.isNotEmpty()
             if (!unvalidatedTypes.contains(type) && !dictionaryContainsType) {
-                val initialEntry = initialDictionary[type.name]
+                val initialEntry = initialDictionary.get(type.name)
                     ?: throw SchemaClassScannerError(failureMessage(type))
-                handleFoundType(type, initialEntry.get(), DictionaryReference())
+
+                handleFoundType(type, initialEntry, DictionaryReference())
+//                val clazz = initialDictionary.get(type.name) ?: throw SchemaClassScannerError(failureMessage(type))
+//                handleFoundType(type, clazz, DictionaryReference())
+
             }
         }
     }

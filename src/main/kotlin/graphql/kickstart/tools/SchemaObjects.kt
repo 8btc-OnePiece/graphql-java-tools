@@ -33,7 +33,8 @@ data class SchemaObjects(
             .additionalTypes(dictionary)
             .additionalDirectives(directives)
             .codeRegistry(codeRegistryBuilder.build())
-            .additionalDirectives(customDirectiveSet)
+            // 如果没问题，那么整个customDirective的改动都可以删除
+//            .additionalDirectives(customDirectiveSet)
             .build()
     }
 

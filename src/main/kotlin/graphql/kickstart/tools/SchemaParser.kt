@@ -1,10 +1,13 @@
 package graphql.kickstart.tools
 
+import graphql.com.google.common.collect.Lists
+import graphql.com.google.common.collect.Sets
 import graphql.introspection.Introspection
 import graphql.kickstart.tools.directive.DirectiveWiringHelper
 import graphql.kickstart.tools.util.getDocumentation
 import graphql.kickstart.tools.util.getExtendedFieldDefinitions
 import graphql.kickstart.tools.util.unwrap
+import graphql.language.Value
 import graphql.language.*
 import graphql.schema.*
 import graphql.schema.idl.RuntimeWiring
@@ -14,6 +17,7 @@ import org.slf4j.LoggerFactory
 import java.util.*
 import java.util.stream.Collectors
 import kotlin.reflect.KClass
+import kotlin.reflect.jvm.internal.ReflectProperties.Val
 
 /**
  * Parses a GraphQL Schema and maps object fields to provided class methods.
@@ -44,7 +48,8 @@ class SchemaParser internal constructor(
     private val inputExtensionDefinitions = definitions.filterIsInstance<InputObjectTypeExtensionDefinition>()
 
     private val objectDefinitions = (definitions.filterIsInstance<ObjectTypeDefinition>() - extensionDefinitions)
-    private val inputObjectDefinitions = (definitions.filterIsInstance<InputObjectTypeDefinition>() - inputExtensionDefinitions)
+    private val inputObjectDefinitions =
+        (definitions.filterIsInstance<InputObjectTypeDefinition>() - inputExtensionDefinitions)
     private val enumDefinitions = definitions.filterIsInstance<EnumTypeDefinition>()
     private val interfaceDefinitions = definitions.filterIsInstance<InterfaceTypeDefinition>()
     private val directiveDefinitions = definitions.filterIsInstance<DirectiveDefinition>()
@@ -52,14 +57,15 @@ class SchemaParser internal constructor(
     private val unionDefinitions = definitions.filterIsInstance<UnionTypeDefinition>()
 
     private val permittedTypesForObject: Set<String> = (objectDefinitions.map { it.name } +
-        enumDefinitions.map { it.name } +
-        interfaceDefinitions.map { it.name } +
-        unionDefinitions.map { it.name }).toSet()
+            enumDefinitions.map { it.name } +
+            interfaceDefinitions.map { it.name } +
+            unionDefinitions.map { it.name }).toSet()
     private val permittedTypesForInputObject: Set<String> =
         (inputObjectDefinitions.map { it.name } + enumDefinitions.map { it.name }).toSet()
 
     private val codeRegistryBuilder = GraphQLCodeRegistry.newCodeRegistry()
-    private val directiveWiringHelper = DirectiveWiringHelper(options, runtimeWiring, codeRegistryBuilder, directiveDefinitions)
+    private val directiveWiringHelper =
+        DirectiveWiringHelper(options, runtimeWiring, codeRegistryBuilder, directiveDefinitions)
 
     /**
      * Parses the given schema with respect to the given dictionary and returns GraphQL objects.
@@ -104,8 +110,16 @@ class SchemaParser internal constructor(
         val additionalObjects = objects.filter { o -> o != query && o != subscription && o != mutation }
 
         val types = (additionalObjects.toSet() as Set<GraphQLType>) + inputObjects + enums + interfaces + unions
-        return SchemaObjects(query, mutation, subscription, types, directives, codeRegistryBuilder, rootInfo.getDescription())
-        return SchemaObjects(query, mutation, subscription, types, codeRegistryBuilder, buildCustomDirectiveSet())
+        return SchemaObjects(
+            query,
+            mutation,
+            subscription,
+            types,
+            directives,
+            codeRegistryBuilder,
+            rootInfo.getDescription(),
+            buildCustomDirectiveSet()
+        )
     }
 
     /**
@@ -119,7 +133,11 @@ class SchemaParser internal constructor(
     @Suppress("unused")
     fun getUnusedDefinitions(): Set<TypeDefinition<*>> = unusedDefinitions
 
-    private fun createObject(objectDefinition: ObjectTypeDefinition, interfaces: List<GraphQLInterfaceType>, inputObjects: List<GraphQLInputObjectType>): GraphQLObjectType {
+    private fun createObject(
+        objectDefinition: ObjectTypeDefinition,
+        interfaces: List<GraphQLInterfaceType>,
+        inputObjects: List<GraphQLInputObjectType>
+    ): GraphQLObjectType {
         val name = objectDefinition.name
         val builder = GraphQLObjectType.newObject()
             .name(name)
@@ -152,8 +170,10 @@ class SchemaParser internal constructor(
         return directiveWiringHelper.wireObject(builder.build())
     }
 
-    private fun createInputObject(definition: InputObjectTypeDefinition, inputObjects: List<GraphQLInputObjectType>,
-                                  referencingInputObjects: MutableSet<String>): GraphQLInputObjectType {
+    private fun createInputObject(
+        definition: InputObjectTypeDefinition, inputObjects: List<GraphQLInputObjectType>,
+        referencingInputObjects: MutableSet<String>
+    ): GraphQLInputObjectType {
         val extensionDefinitions = inputExtensionDefinitions.filter { it.name == definition.name }
 
         val builder = GraphQLInputObjectType.newInputObject()
@@ -215,7 +235,10 @@ class SchemaParser internal constructor(
         return directiveWiringHelper.wireEnum(builder.build())
     }
 
-    private fun createInterfaceObject(interfaceDefinition: InterfaceTypeDefinition, inputObjects: List<GraphQLInputObjectType>): GraphQLInterfaceType {
+    private fun createInterfaceObject(
+        interfaceDefinition: InterfaceTypeDefinition,
+        inputObjects: List<GraphQLInputObjectType>
+    ): GraphQLInterfaceType {
         val name = interfaceDefinition.name
         val builder = GraphQLInterfaceType.newInterface()
             .name(name)
@@ -247,7 +270,10 @@ class SchemaParser internal constructor(
         return directiveWiringHelper.wireUnion(builder.build())
     }
 
-    private fun getLeafUnionObjects(definition: UnionTypeDefinition, types: List<GraphQLObjectType>): List<GraphQLObjectType> {
+    private fun getLeafUnionObjects(
+        definition: UnionTypeDefinition,
+        types: List<GraphQLObjectType>
+    ): List<GraphQLObjectType> {
         val name = definition.name
         val leafObjects = mutableListOf<GraphQLObjectType>()
 
@@ -255,7 +281,8 @@ class SchemaParser internal constructor(
             val typeName = (it as TypeName).name
 
             // Is this a nested union? If so, expand
-            val nestedUnion: UnionTypeDefinition? = unionDefinitions.find { otherDefinition -> typeName == otherDefinition.name }
+            val nestedUnion: UnionTypeDefinition? =
+                unionDefinitions.find { otherDefinition -> typeName == otherDefinition.name }
 
             if (nestedUnion != null) {
                 leafObjects.addAll(getLeafUnionObjects(nestedUnion, types))
@@ -267,7 +294,11 @@ class SchemaParser internal constructor(
         return leafObjects
     }
 
-    private fun createField(field: GraphQLFieldDefinition.Builder, fieldDefinition: FieldDefinition, inputObjects: List<GraphQLInputObjectType>): GraphQLFieldDefinition.Builder {
+    private fun createField(
+        field: GraphQLFieldDefinition.Builder,
+        fieldDefinition: FieldDefinition,
+        inputObjects: List<GraphQLInputObjectType>
+    ): GraphQLFieldDefinition.Builder {
         field
             .name(fieldDefinition.name)
             .description(getDocumentation(fieldDefinition, options))
@@ -292,8 +323,12 @@ class SchemaParser internal constructor(
         return field
     }
 
-    private fun createDirective(definition: DirectiveDefinition, inputObjects: List<GraphQLInputObjectType>): GraphQLDirective {
-        val locations = definition.directiveLocations.map { Introspection.DirectiveLocation.valueOf(it.name) }.toTypedArray()
+    private fun createDirective(
+        definition: DirectiveDefinition,
+        inputObjects: List<GraphQLInputObjectType>
+    ): GraphQLDirective {
+        val locations =
+            definition.directiveLocations.map { Introspection.DirectiveLocation.valueOf(it.name) }.toTypedArray()
 
         val graphQLDirective = GraphQLDirective.newDirective()
             .name(definition.name)
@@ -326,26 +361,29 @@ class SchemaParser internal constructor(
      */
     private fun buildCustomDirectiveSet(): Set<GraphQLDirective> {
         val directiveSet = HashSet<GraphQLDirective>()
+
         for (element in customDirectives) {
-            directiveSet.add(GraphQLDirective.newDirective()
+            directiveSet.add(
+                GraphQLDirective.newDirective()
                     .name(element.name)
                     .description(element.description?.content)
                     .validLocations(
-                            *element.directiveLocations.stream().map {
-                                Introspection.DirectiveLocation.valueOf(it.name.toUpperCase())
-                            }.collect(Collectors.toList()).toTypedArray()
+                        *element.directiveLocations.stream().map {
+                            Introspection.DirectiveLocation.valueOf(it.name.toUpperCase())
+                        }.collect(Collectors.toList()).toTypedArray()
                     )
                     .replaceArguments(
-                            element.inputValueDefinitions.stream().map {
-                                GraphQLArgument.newArgument()
-                                        .name(it.name)
-                                        .type(determineInputType(it.type))
-                                        .defaultValue(it.defaultValue)
-                                        .description(it.description?.content)
-                                        .build()
-                            }.collect(Collectors.toList())
+                        element.inputValueDefinitions.stream().map {
+                            GraphQLArgument.newArgument()
+                                .name(it.name)
+                                .type(determineInputType(it.type, Lists.newArrayList(), Sets.newHashSet()))
+                                .defaultValue(it.defaultValue)
+                            .description(it.description?.content)
+                            .build()
+                        }.collect(Collectors.toList())
                     )
-                    .build())
+                    .build()
+            )
         }
         return directiveSet
     }
@@ -359,11 +397,13 @@ class SchemaParser internal constructor(
                 .comparatorRegistry(runtimeWiring.comparatorRegistry)
                 .apply {
                     it.arguments.forEach { arg ->
-                        argument(GraphQLAppliedDirectiveArgument.newArgument()
-                            .name(arg.name)
-                            .type(directiveWiringHelper.buildDirectiveInputType(arg.value))
-                            .valueLiteral(arg.value)
-                            .build())
+                        argument(
+                            GraphQLAppliedDirectiveArgument.newArgument()
+                                .name(arg.name)
+                                .type(directiveWiringHelper.buildDirectiveInputType(arg.value))
+                                .valueLiteral(arg.value)
+                                .build()
+                        )
                     }
                 }
                 .build()
@@ -371,16 +411,43 @@ class SchemaParser internal constructor(
     }
 
     private fun determineOutputType(typeDefinition: Type<*>, inputObjects: List<GraphQLInputObjectType>) =
-        determineType(GraphQLOutputType::class, typeDefinition, permittedTypesForObject, inputObjects) as GraphQLOutputType
+        determineType(
+            GraphQLOutputType::class,
+            typeDefinition,
+            permittedTypesForObject,
+            inputObjects
+        ) as GraphQLOutputType
 
-    private fun <T : Any> determineType(expectedType: KClass<T>, typeDefinition: Type<*>, allowedTypeReferences: Set<String>, inputObjects: List<GraphQLInputObjectType>): GraphQLType =
+    private fun <T : Any> determineType(
+        expectedType: KClass<T>,
+        typeDefinition: Type<*>,
+        allowedTypeReferences: Set<String>,
+        inputObjects: List<GraphQLInputObjectType>
+    ): GraphQLType =
         when (typeDefinition) {
-            is ListType -> GraphQLList(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
-            is NonNullType -> GraphQLNonNull(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
+            is ListType -> GraphQLList(
+                determineType(
+                    expectedType,
+                    typeDefinition.type,
+                    allowedTypeReferences,
+                    inputObjects
+                )
+            )
+
+            is NonNullType -> GraphQLNonNull(
+                determineType(
+                    expectedType,
+                    typeDefinition.type,
+                    allowedTypeReferences,
+                    inputObjects
+                )
+            )
+
             is InputObjectTypeDefinition -> {
                 log.info("Create input object")
                 createInputObject(typeDefinition, inputObjects, mutableSetOf())
             }
+
             is TypeName -> {
                 val scalarType = customScalars[typeDefinition.name]
                     ?: GRAPHQL_SCALARS[typeDefinition.name]
@@ -388,29 +455,61 @@ class SchemaParser internal constructor(
                     scalarType
                 } else {
                     if (!allowedTypeReferences.contains(typeDefinition.name)) {
-                        throw SchemaError("Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
-                            "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?")
+                        throw SchemaError(
+                            "Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
+                                    "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?"
+                        )
                     }
                     inputObjects.find { it.name == typeDefinition.name } ?: GraphQLTypeReference(typeDefinition.name)
                 }
             }
+
             else -> throw SchemaError("Unknown type: $typeDefinition")
         }
 
-    private fun determineInputType(typeDefinition: Type<*>, inputObjects: List<GraphQLInputObjectType>, referencingInputObjects: Set<String>) =
-        determineInputType(GraphQLInputType::class, typeDefinition, permittedTypesForInputObject, inputObjects, referencingInputObjects)
+    private fun determineInputType(
+        typeDefinition: Type<*>,
+        inputObjects: List<GraphQLInputObjectType>,
+        referencingInputObjects: Set<String>
+    ) =
+        determineInputType(
+            GraphQLInputType::class,
+            typeDefinition,
+            permittedTypesForInputObject,
+            inputObjects,
+            referencingInputObjects
+        )
 
-    private fun <T : Any> determineInputType(expectedType: KClass<T>,
-                                             typeDefinition: Type<*>, allowedTypeReferences: Set<String>,
-                                             inputObjects: List<GraphQLInputObjectType>,
-                                             referencingInputObjects: Set<String>): GraphQLInputType =
+    private fun <T : Any> determineInputType(
+        expectedType: KClass<T>,
+        typeDefinition: Type<*>, allowedTypeReferences: Set<String>,
+        inputObjects: List<GraphQLInputObjectType>,
+        referencingInputObjects: Set<String>
+    ): GraphQLInputType =
         when (typeDefinition) {
-            is ListType -> GraphQLList(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
-            is NonNullType -> GraphQLNonNull(determineType(expectedType, typeDefinition.type, allowedTypeReferences, inputObjects))
+            is ListType -> GraphQLList(
+                determineType(
+                    expectedType,
+                    typeDefinition.type,
+                    allowedTypeReferences,
+                    inputObjects
+                )
+            )
+
+            is NonNullType -> GraphQLNonNull(
+                determineType(
+                    expectedType,
+                    typeDefinition.type,
+                    allowedTypeReferences,
+                    inputObjects
+                )
+            )
+
             is InputObjectTypeDefinition -> {
                 log.info("Create input object")
                 createInputObject(typeDefinition, inputObjects, referencingInputObjects as MutableSet<String>)
             }
+
             is TypeName -> {
                 val scalarType = customScalars[typeDefinition.name]
                     ?: GRAPHQL_SCALARS[typeDefinition.name]
@@ -418,8 +517,10 @@ class SchemaParser internal constructor(
                     scalarType
                 } else {
                     if (!allowedTypeReferences.contains(typeDefinition.name)) {
-                        throw SchemaError("Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
-                            "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?")
+                        throw SchemaError(
+                            "Expected type '${typeDefinition.name}' to be a ${expectedType.simpleName}, but it wasn't!  " +
+                                    "Was a type only permitted for object types incorrectly used as an input type, or vice-versa?"
+                        )
                     }
                     val found = inputObjects.filter { it.name == typeDefinition.name }
                     if (found.size == 1) {
@@ -431,7 +532,11 @@ class SchemaParser internal constructor(
                             if (referencingInputObject != null) {
                                 GraphQLTypeReference(referencingInputObject)
                             } else {
-                                val inputObject = createInputObject(filteredDefinitions[0], inputObjects, referencingInputObjects as MutableSet<String>)
+                                val inputObject = createInputObject(
+                                    filteredDefinitions[0],
+                                    inputObjects,
+                                    referencingInputObjects as MutableSet<String>
+                                )
                                 (inputObjects as MutableList).add(inputObject)
                                 inputObject
                             }
@@ -442,6 +547,7 @@ class SchemaParser internal constructor(
                     }
                 }
             }
+
             else -> throw SchemaError("Unknown type: $typeDefinition")
         }
 

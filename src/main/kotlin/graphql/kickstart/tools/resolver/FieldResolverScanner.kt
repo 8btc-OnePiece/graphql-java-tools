@@ -4,6 +4,7 @@ import graphql.GraphQLContext
 import graphql.Scalars
 import graphql.kickstart.tools.ResolverInfo
 import graphql.kickstart.tools.RootResolverInfo
+import graphql.kickstart.tools.SchemaParserDictionary
 import graphql.kickstart.tools.SchemaParserOptions
 import graphql.kickstart.tools.util.*
 import graphql.language.FieldDefinition
