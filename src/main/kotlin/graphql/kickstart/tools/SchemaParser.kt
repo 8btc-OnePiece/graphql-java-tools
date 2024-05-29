@@ -19,7 +19,6 @@ import org.slf4j.LoggerFactory
 import java.util.*
 import java.util.stream.Collectors
 import kotlin.reflect.KClass
-import kotlin.reflect.jvm.internal.ReflectProperties.Val
 
 /**
  * Parses a GraphQL Schema and maps object fields to provided class methods.
@@ -113,7 +112,7 @@ class SchemaParser internal constructor(
         val additionalObjects = objects.filter { o -> o != query && o != subscription && o != mutation }
 
         val types = (additionalObjects.toSet() as Set<GraphQLType>) + inputObjects + enums + interfaces + unions
-        return SchemaObjects(query, mutation, subscription, types, schemaDirectives, codeRegistryBuilder, rootInfo.getDescription())
+        return SchemaObjects(query, mutation, subscription, types, schemaDirectives, codeRegistryBuilder, rootInfo.getDescription(), buildCustomDirectiveSet())
     }
 
     /**
