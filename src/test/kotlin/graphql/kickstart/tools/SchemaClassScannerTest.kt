@@ -1,9 +1,15 @@
 package graphql.kickstart.tools
 
+import graphql.GraphQLContext
+import graphql.execution.CoercedVariables
+import graphql.language.Value
 import graphql.schema.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import org.junit.Test
+import java.util.*
 import java.util.concurrent.CompletableFuture
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class SchemaClassScannerTest {
 
     @Test
@@ -185,9 +191,9 @@ class SchemaClassScannerTest {
                 .name("UUID")
                 .description("Test scalars with duplicate types")
                 .coercing(object : Coercing<Any, Any> {
-                    override fun serialize(dataFetcherResult: Any): Any? = null
-                    override fun parseValue(input: Any): Any = input
-                    override fun parseLiteral(input: Any): Any = input
+                    override fun serialize(dataFetcherResult: Any, context: GraphQLContext, locale: Locale): Any? = null
+                    override fun parseValue(input: Any, context: GraphQLContext, locale: Locale): Any = input
+                    override fun parseLiteral(input: Value<*>, variables: CoercedVariables, context: GraphQLContext, locale: Locale): Any = input
                 }).build())
             .schemaString(
                 """
@@ -306,9 +312,9 @@ class SchemaClassScannerTest {
         val customMap = GraphQLScalarType.newScalar()
             .name("customMap")
             .coercing(object : Coercing<Map<String, Any>, Map<String, Any>> {
-                override fun serialize(dataFetcherResult: Any): Map<String, Any> = mapOf()
-                override fun parseValue(input: Any): Map<String, Any> = mapOf()
-                override fun parseLiteral(input: Any): Map<String, Any> = mapOf()
+                override fun serialize(dataFetcherResult: Any, context: GraphQLContext, locale: Locale): Map<String, Any> = mapOf()
+                override fun parseValue(input: Any, context: GraphQLContext, locale: Locale): Map<String, Any> = mapOf()
+                override fun parseLiteral(input: Value<*>, variables: CoercedVariables, context: GraphQLContext, locale: Locale): Map<String, Any> = mapOf()
             }).build()
 
         val schema = SchemaParser.newParser()
@@ -422,8 +428,19 @@ class SchemaClassScannerTest {
         val schema = SchemaParser.newParser()
             .schemaString(
                 """
-                # Let's say this is the Products service from Apollo Federation Introduction
+                # these directives are defined in the Apollo Federation Specification: 
+                # https://www.apollographql.com/docs/apollo-server/federation/federation-spec/
+                scalar FieldSet
+                scalar link__Import
+                enum link__Purpose { SECURITY EXECUTION }
+                directive @key(fields: FieldSet!, resolvable: Boolean = true) repeatable on OBJECT | INTERFACE
+                directive @extends on OBJECT | INTERFACE
+                directive @external on FIELD_DEFINITION | OBJECT
+                directive @link(url: String!, as: String, for: link__Purpose) repeatable on SCHEMA
 
+                extend schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key", "@shareable"])
+
+                # Let's say this is the Products service from Apollo Federation Introduction
                 type Query {
                     allProducts: [Product]
                 }
@@ -432,8 +449,6 @@ class SchemaClassScannerTest {
                     name: String
                 }
                 
-                # these directives are defined in the Apollo Federation Specification: 
-                # https://www.apollographql.com/docs/apollo-server/federation/federation-spec/
                 type User @key(fields: "id") @extends {
                     id: ID! @external
                     recentPurchasedProducts: [Product]
@@ -449,6 +464,8 @@ class SchemaClassScannerTest {
             })
             .options(SchemaParserOptions.newOptions().includeUnusedTypes(true).build())
             .dictionary(User::class)
+            .dictionary("link__Purpose", LinkPurpose::class)
+            .scalars(fieldSetScalar)
             .build()
             .makeExecutableSchema()
 
@@ -456,6 +473,20 @@ class SchemaClassScannerTest {
         assert(objectTypes.any { it.name == "User" })
         assert(objectTypes.any { it.name == "Address" })
     }
+
+    data class FieldSet(val value: String)
+    enum class LinkPurpose { SECURITY, EXECUTION }
+
+    private val fieldSetScalar: GraphQLScalarType = GraphQLScalarType.newScalar()
+        .name("FieldSet")
+        .coercing(object : Coercing<FieldSet, String> {
+            override fun serialize(input: Any, context: GraphQLContext, locale: Locale) = input.toString()
+            override fun parseValue(input: Any, context: GraphQLContext, locale: Locale) =
+                FieldSet(input.toString())
+            override fun parseLiteral(input: Value<*>, variables: CoercedVariables, context: GraphQLContext, locale: Locale) =
+                FieldSet(input.toString())
+        })
+        .build()
 
     class Product {
         var name: String? = null

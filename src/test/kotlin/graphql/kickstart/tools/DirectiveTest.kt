@@ -4,13 +4,9 @@ import graphql.GraphQL
 import graphql.execution.AsyncExecutionStrategy
 import graphql.relay.Connection
 import graphql.relay.SimpleListConnection
-import graphql.schema.DataFetcherFactories
-import graphql.schema.DataFetchingEnvironment
-import graphql.schema.GraphQLFieldDefinition
-import graphql.schema.GraphQLObjectType
+import graphql.schema.*
 import graphql.schema.idl.SchemaDirectiveWiring
 import graphql.schema.idl.SchemaDirectiveWiringEnvironment
-import org.junit.Ignore
 import org.junit.Test
 
 class DirectiveTest {
@@ -122,6 +118,7 @@ class DirectiveTest {
             .schemaString(
                 """
                 directive @double repeatable on FIELD_DEFINITION
+                directive @uppercase on FIELD_DEFINITION
                 
                 type Query {
                     user: User
@@ -192,7 +189,8 @@ class DirectiveTest {
                     name
                 }
             }
-            """)
+            """
+        )
 
         val expected = mapOf(
             "user" to mapOf("id" to "1", "name" to "LukeLukeLukeLuke")
@@ -202,7 +200,49 @@ class DirectiveTest {
     }
 
     @Test
-    @Ignore("Ignore until enums work in directives")
+    fun `should have access to applied directives through the data fetching environment`() {
+        val schema = SchemaParser.newParser()
+            .schemaString(
+                """
+                directive @uppercase on OBJECT
+                
+                type Query {
+                    name: String @uppercase
+                }
+                
+                """
+            )
+            .resolvers(NameResolver())
+            .directive("uppercase", UppercaseDirective())
+            .build()
+            .makeExecutableSchema()
+
+        val gql = GraphQL.newGraphQL(schema)
+            .queryExecutionStrategy(AsyncExecutionStrategy())
+            .build()
+
+        val result = gql.execute(
+            """
+            query {
+                name
+            }
+            """
+        )
+
+        val expected = mapOf("name" to "LUKE")
+
+        assertEquals(result.getData(), expected)
+    }
+
+    internal class NameResolver : GraphQLQueryResolver {
+        fun name(environment: DataFetchingEnvironment): String {
+            assertNotNull(environment.fieldDefinition.getAppliedDirective("uppercase"))
+            assertNotNull(environment.fieldDefinition.getDirective("uppercase"))
+            return "luke"
+        }
+    }
+
+    @Test
     fun `should compile schema with directive that has enum parameter`() {
         val schema = SchemaParser.newParser()
             .schemaString(
@@ -225,6 +265,7 @@ class DirectiveTest {
                 """)
             .resolvers(QueryResolver())
             .directive("allowed", AllowedDirective())
+            .dictionary(AllowedState::class)
             .build()
             .makeExecutableSchema()
 
@@ -280,7 +321,7 @@ class DirectiveTest {
 
         override fun onField(environment: SchemaDirectiveWiringEnvironment<GraphQLFieldDefinition>): GraphQLFieldDefinition {
             val field = environment.element
-            val parentType = environment.fieldsContainer
+            val parentType = FieldCoordinates.coordinates(environment.fieldsContainer, environment.fieldDefinition)
 
             val originalDataFetcher = environment.codeRegistry.getDataFetcher(parentType, field)
             val wrappedDataFetcher = DataFetcherFactories.wrapDataFetcher(originalDataFetcher) { _, value ->
@@ -297,7 +338,7 @@ class DirectiveTest {
 
         override fun onField(environment: SchemaDirectiveWiringEnvironment<GraphQLFieldDefinition>): GraphQLFieldDefinition {
             val field = environment.element
-            val parentType = environment.fieldsContainer
+            val parentType = FieldCoordinates.coordinates(environment.fieldsContainer, environment.fieldDefinition)
 
             val originalDataFetcher = environment.codeRegistry.getDataFetcher(parentType, field)
             val wrappedDataFetcher = DataFetcherFactories.wrapDataFetcher(originalDataFetcher) { _, value ->
@@ -305,7 +346,7 @@ class DirectiveTest {
                 string + string
             }
 
-            environment.codeRegistry.dataFetcher(parentType, field, wrappedDataFetcher)
+            environment.codeRegistry.dataFetcher(parentType, wrappedDataFetcher)
 
             return field
         }

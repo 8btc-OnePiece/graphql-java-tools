@@ -2,7 +2,9 @@ package graphql.kickstart.tools
 
 import graphql.language.Definition
 import graphql.language.Document
+import graphql.parser.MultiSourceReader
 import graphql.parser.Parser
+import graphql.parser.ParserEnvironment
 import graphql.parser.ParserOptions
 import graphql.schema.GraphQLScalarType
 import graphql.schema.idl.RuntimeWiring
@@ -24,6 +26,10 @@ class SchemaParserBuilder {
     private val scalars = mutableListOf<GraphQLScalarType>()
     private val runtimeWiringBuilder = RuntimeWiring.newRuntimeWiring()
     private var options = SchemaParserOptions.defaultOptions()
+    private val parser = Parser()
+    private val parserOptions = ParserOptions
+        .getDefaultParserOptions()
+        .transform { o -> o.maxTokens(MAX_VALUE) }
 
     /**
      * Add GraphQL schema files from the classpath.
@@ -165,17 +171,14 @@ class SchemaParserBuilder {
     }
 
     private fun parseDocuments(): List<Document> {
-        val parser = Parser()
-        val documents = mutableListOf<Document>()
         try {
-            files.forEach { documents.add(parser.parseDocument(readFile(it), it)) }
+            val documents = files.map { parseDocument(readFile(it), it) }.toMutableList()
 
-            if (schemaString.isNotEmpty()) {
-                val options = ParserOptions
-                    .getDefaultParserOptions()
-                    .transform { o -> o.maxTokens(MAX_VALUE) }
-                documents.add(parser.parseDocument(schemaString.toString(), options))
+            if (schemaString.isNotBlank()) {
+                documents.add(parseDocument(schemaString.toString()))
             }
+
+            return documents
         } catch (pce: ParseCancellationException) {
             val cause = pce.cause
             if (cause != null && cause is RecognitionException) {
@@ -184,15 +187,23 @@ class SchemaParserBuilder {
                 throw pce
             }
         }
-        return documents
     }
 
-    private fun readFile(filename: String): String {
-        return java.io.BufferedReader(java.io.InputStreamReader(
-            object : Any() {}.javaClass.classLoader.getResourceAsStream(filename)
-                ?: throw java.io.FileNotFoundException("classpath:$filename")
-        )).readText()
+    private fun parseDocument(input: String, sourceName: String? = null): Document {
+        val sourceReader = MultiSourceReader
+            .newMultiSourceReader()
+            .string(input, sourceName)
+            .trackData(true).build()
+        val environment = ParserEnvironment
+            .newParserEnvironment()
+            .document(sourceReader)
+            .parserOptions(parserOptions).build()
+        return parser.parseDocument(environment)
     }
+
+    private fun readFile(filename: String) =
+        this::class.java.classLoader.getResource(filename)?.readText()
+            ?: throw java.io.FileNotFoundException("classpath:$filename")
 
     /**
      * Build the parser with the supplied schema and dictionary.
@@ -200,7 +211,10 @@ class SchemaParserBuilder {
     fun build() = SchemaParser(scan(), options, runtimeWiringBuilder.build())
 }
 
-class InvalidSchemaError(pce: ParseCancellationException, private val recognitionException: RecognitionException) : RuntimeException(pce) {
-    override val message: String?
+class InvalidSchemaError(
+    pce: ParseCancellationException,
+    private val recognitionException: RecognitionException
+) : RuntimeException(pce) {
+    override val message: String
         get() = "Invalid schema provided (${recognitionException.javaClass.name}) at: ${recognitionException.offendingToken}"
 }
