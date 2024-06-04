@@ -3,32 +3,9 @@ package graphql.kickstart.tools
 import graphql.kickstart.tools.util.BiMap
 import kotlin.reflect.KClass
 
-class SchemaParserDictionary constructor(private val sourceClassPaths: List<String> = listOf("")){
-
+class SchemaParserDictionary {
 
     private val dictionary: BiMap<String, Class<*>> = BiMap.create()
-
-    fun get(name: String): Class<*>? {
-        return if (dictionary.containsKey(name)) {
-            dictionary[name]
-        } else {
-            val clazz = findClassInSourceClassPaths(name);
-            if (clazz != null) {
-                add(clazz)
-            }
-            clazz
-        }
-    }
-
-    private fun findClassInSourceClassPaths(className: String): Class<*>? {
-        for (sourceClassPath in sourceClassPaths) {
-            try {
-                return Class.forName(sourceClassPath + className)
-            } catch (ignore: ClassNotFoundException) { }
-        }
-        return null
-    }
-
 
     fun getDictionary(): BiMap<String, Class<*>> = BiMap.unmodifiableBiMap(dictionary)
 

@@ -32,7 +32,7 @@ import kotlin.reflect.jvm.kotlinFunction
 /**
  * @author Andrew Potter
  */
-internal class FieldResolverScanner(private val dictionary: SchemaParserDictionary, val options: SchemaParserOptions) {
+internal class FieldResolverScanner(val options: SchemaParserOptions) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 

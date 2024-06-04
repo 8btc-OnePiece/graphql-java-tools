@@ -18,7 +18,7 @@ import java.util.*
 class FieldResolverScannerTest {
 
     private val options = defaultOptions()
-    private val scanner = FieldResolverScanner(SchemaParserDictionary(), options)
+    private val scanner = FieldResolverScanner(options)
 
     @Test
     fun `scanner finds fields on multiple root types`() {

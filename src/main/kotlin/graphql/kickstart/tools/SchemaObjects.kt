@@ -19,7 +19,6 @@ data class SchemaObjects(
     val directives: Set<GraphQLDirective>,
     val codeRegistryBuilder: GraphQLCodeRegistry.Builder,
     val description: String?,
-    val customDirectiveSet: Set<GraphQLDirective>
 ) {
     /**
      * Makes a GraphQLSchema with query, mutation and subscription.
@@ -33,8 +32,6 @@ data class SchemaObjects(
             .additionalTypes(dictionary)
             .additionalDirectives(directives)
             .codeRegistry(codeRegistryBuilder.build())
-            // 如果没问题，那么整个customDirective的改动都可以删除
-//            .additionalDirectives(customDirectiveSet)
             .build()
     }
 

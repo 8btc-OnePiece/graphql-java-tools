@@ -293,7 +293,7 @@ class MethodFieldResolverDataFetcherTest {
         } else {
             NormalResolverInfo(resolver, options)
         }
-        return FieldResolverScanner(SchemaParserDictionary(), options).findFieldResolver(field, resolverInfo).createDataFetcher()
+        return FieldResolverScanner(options).findFieldResolver(field, resolverInfo).createDataFetcher()
     }
 
     private fun createEnvironment(source: Any = Object(), arguments: Map<String, Any> = emptyMap(), context: GraphQLContext? = null): DataFetchingEnvironment {

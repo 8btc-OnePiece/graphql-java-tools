@@ -13,7 +13,7 @@ import java.lang.reflect.Method
  * @author Andrew Potter
  */
 internal class SchemaClassScanner(
-    private val initialDictionary: SchemaParserDictionary,
+    initialDictionary: BiMap<String, Class<*>>,
     allDefinitions: List<Definition<*>>,
     resolvers: List<GraphQLResolver<*>>,
     private val scalars: CustomScalarMap,
@@ -32,8 +32,8 @@ internal class SchemaClassScanner(
     private val resolverInfos = resolvers.asSequence().minus(queryResolvers).minus(mutationResolvers).minus(subscriptionResolvers).map { NormalResolverInfo(it, options) }.toList()
     private val resolverInfosByDataClass = this.resolverInfos.associateBy { it.dataClassType }
 
+    private val initialDictionary = initialDictionary.mapValues { InitialDictionaryEntry(it.value) }
     private val extensionDefinitions = allDefinitions.filterIsInstance<ObjectTypeExtensionDefinition>()
-    private val customDirectives = allDefinitions.filterIsInstance<DirectiveDefinition>()
     private val inputExtensionDefinitions = allDefinitions.filterIsInstance<InputObjectTypeExtensionDefinition>()
     private val directiveDefinitions = allDefinitions.filterIsInstance<DirectiveDefinition>()
     private val scalarDefinitions = allDefinitions.filterIsInstance<ScalarTypeDefinition>()
@@ -43,7 +43,7 @@ internal class SchemaClassScanner(
     private val objectDefinitionsByName = objectDefinitions.associateBy { it.name }
     private val interfaceDefinitionsByName = allDefinitions.filterIsInstance<InterfaceTypeDefinition>().associateBy { it.name }
 
-    private val fieldResolverScanner = FieldResolverScanner(initialDictionary, options)
+    private val fieldResolverScanner = FieldResolverScanner(options)
     private val typeClassMatcher = TypeClassMatcher(definitionsByName)
     private val dictionary = mutableMapOf<TypeDefinition<*>, DictionaryEntry>()
     private val unvalidatedTypes = mutableSetOf<TypeDefinition<*>>()
@@ -52,6 +52,19 @@ internal class SchemaClassScanner(
     private val fieldResolversByType = mutableMapOf<ObjectTypeDefinition, MutableMap<FieldDefinition, FieldResolver>>()
 
     init {
+        /**
+         * 这里要求提供的目录中的所有类的都需要在graphql中定义。
+         * 我们的服务会将所有graphql生成的javaBean全部提供到目录。
+         * 很难做到专门把不使用的排除，更何况多了也不会有任何影响。
+         * 虽然我很不想动源码，但是这个必须被删掉
+         *
+         */
+//        initialDictionary.forEach { (name, clazz) ->
+//            if (!definitionsByName.containsKey(name)) {
+//                throw SchemaClassScannerError("Class in supplied dictionary '${clazz.name}' specified type name '$name', but a type definition with that name was not found!")
+//            }
+//        }
+
         if (options.allowUnimplementedResolvers) {
             log.warn("Option 'allowUnimplementedResolvers' should only be set to true during development, as it can cause schema errors to be moved to query time instead of schema creation time.  Make sure this is turned off in production.")
         }
@@ -87,7 +100,9 @@ internal class SchemaClassScanner(
             do {
                 val unusedDefinitions = (definitionsByName.values - (dictionary.keys.toSet() + unvalidatedTypes))
                     .filter { definition -> definition.name != "PageInfo" }
-                    .filterIsInstance<ObjectTypeDefinition>().distinct()
+                    .filter { definition -> initialDictionary.contains(definition.name) }
+                    .distinct()
+//                    .filterIsInstance<ObjectTypeDefinition>().distinct()
 
                 if (unusedDefinitions.isEmpty()) {
                     break
@@ -96,7 +111,8 @@ internal class SchemaClassScanner(
                 val unusedDefinition = unusedDefinitions.first()
 
                 handleDictionaryTypes(listOf(unusedDefinition)) { "Object type '${it.name}' is unused and includeUnusedTypes is true. Please pass a class for type '${it.name}' in the parser's dictionary." }
-            } while (scanQueue())
+                scanQueue()
+            } while (true)
         }
 
         handleDirectives()
@@ -148,6 +164,7 @@ internal class SchemaClassScanner(
             is EnumTypeDefinition -> handleDictionaryTypes(listOf(typeDefinition)) {
                 "Enum type '${it.name}' is used in a directive, but no class could be found for that type name. Please pass a class for type '${it.name}' in the parser's dictionary."
             }
+
             is InputObjectTypeDefinition -> handleDictionaryTypes(listOf(typeDefinition)) {
                 "Input object type '${it.name}' is used in a directive, but no class could be found for that type name. Please pass a class for type '${it.name}' in the parser's dictionary."
             }
@@ -172,10 +189,10 @@ internal class SchemaClassScanner(
                 dictionary
                     .filter {
                         it.value.javaType != null
-                            && it.value.typeClass() != java.lang.Object::class.java
-                            && !java.util.Map::class.java.isAssignableFrom(it.value.typeClass())
-                            && it.key !is InputObjectTypeDefinition
-                            && it.key !is UnionTypeDefinition
+                                && it.value.typeClass() != java.lang.Object::class.java
+                                && !java.util.Map::class.java.isAssignableFrom(it.value.typeClass())
+                                && it.key !is InputObjectTypeDefinition
+                                && it.key !is UnionTypeDefinition
                     }.mapValuesTo(it) { it.value.javaType }
             })
         } catch (t: Throwable) {
@@ -220,7 +237,7 @@ internal class SchemaClassScanner(
 
         val definitions = observedDefinitions + extensionDefinitions + inputExtensionDefinitions + directiveDefinitions
 
-        return ScannedSchemaObjects(dictionary, definitions, scalars, customDirectives,rootInfo, fieldResolversByType.toMap(), unusedDefinitions)
+        return ScannedSchemaObjects(dictionary, definitions, scalars, rootInfo, fieldResolversByType.toMap(), unusedDefinitions)
     }
 
     private fun validateRootResolversWereUsed(rootType: RootType?, fieldResolvers: List<FieldResolver>) {
@@ -256,19 +273,15 @@ internal class SchemaClassScanner(
         types.forEach { type ->
             val dictionaryContainsType = dictionary.filter { it.key.name == type.name }.isNotEmpty()
             if (!unvalidatedTypes.contains(type) && !dictionaryContainsType) {
-                val initialEntry = initialDictionary.get(type.name)
+                val initialEntry = initialDictionary[type.name]
                     ?: throw SchemaClassScannerError(failureMessage(type))
-
-                handleFoundType(type, initialEntry, DictionaryReference())
-//                val clazz = initialDictionary.get(type.name) ?: throw SchemaClassScannerError(failureMessage(type))
-//                handleFoundType(type, clazz, DictionaryReference())
-
+                handleFoundType(type, initialEntry.get(), DictionaryReference())
             }
         }
     }
 
     private fun getResolverInfoFromTypeDictionary(typeName: String): ResolverInfo? {
-        val dictionaryType = initialDictionary.get(typeName)
+        val dictionaryType = initialDictionary[typeName]?.get()
         return if (dictionaryType != null) {
             resolverInfosByDataClass[dictionaryType] ?: DataClassResolverInfo(dictionaryType)
         } else {
@@ -403,7 +416,7 @@ internal class SchemaClassScanner(
             return inputValueType
         }
 
-        return initialDictionary.get(inputGraphQLType.name)
+        return initialDictionary[inputGraphQLType.name]?.get()
     }
 
     private fun findInputValueTypeInType(name: String, clazz: Class<*>): JavaType? {
@@ -486,18 +499,9 @@ internal class SchemaClassScanner(
         override fun getDescription() = "return type of method $method"
     }
 
-    class ReturnValueEmptyReference() : Reference() {
-        override fun getDescription() = "no custom reference method found"
-    }
-
     internal class MethodParameterReference(private val method: Method, private val index: Int) : Reference() {
         override fun getDescription() = "parameter $index of method $method"
     }
-
-    class MethodParameterEmptyReference() : Reference() {
-        override fun getDescription() = "no custom reference method found"
-    }
-
 
     internal class FieldTypeReference(private val field: String) : Reference() {
         override fun getDescription() = "type of field $field"
@@ -523,11 +527,43 @@ internal class SchemaClassScanner(
         private val mutationResolverInfo = RootResolverInfo(mutationResolvers, options)
         private val subscriptionResolverInfo = RootResolverInfo(subscriptionResolvers, options)
 
-        val query = createRootType("query", queryDefinition, queryName, true, queryResolvers, GraphQLQueryResolver::class.java, queryResolverInfo)
-        val mutation = createRootType("mutation", mutationDefinition, mutationName, rootInfo.isMutationRequired(), mutationResolvers, GraphQLMutationResolver::class.java, mutationResolverInfo)
-        val subscription = createRootType("subscription", subscriptionDefinition, subscriptionName, rootInfo.isSubscriptionRequired(), subscriptionResolvers, GraphQLSubscriptionResolver::class.java, subscriptionResolverInfo)
+        val query = createRootType(
+            "query",
+            queryDefinition,
+            queryName,
+            true,
+            queryResolvers,
+            GraphQLQueryResolver::class.java,
+            queryResolverInfo
+        )
+        val mutation = createRootType(
+            "mutation",
+            mutationDefinition,
+            mutationName,
+            rootInfo.isMutationRequired(),
+            mutationResolvers,
+            GraphQLMutationResolver::class.java,
+            mutationResolverInfo
+        )
+        val subscription = createRootType(
+            "subscription",
+            subscriptionDefinition,
+            subscriptionName,
+            rootInfo.isSubscriptionRequired(),
+            subscriptionResolvers,
+            GraphQLSubscriptionResolver::class.java,
+            subscriptionResolverInfo
+        )
 
-        private fun createRootType(name: String, type: TypeDefinition<*>?, typeName: String, required: Boolean, resolvers: List<GraphQLRootResolver>, resolverInterface: Class<*>, resolverInfo: RootResolverInfo): RootType? {
+        private fun createRootType(
+            name: String,
+            type: TypeDefinition<*>?,
+            typeName: String,
+            required: Boolean,
+            resolvers: List<GraphQLRootResolver>,
+            resolverInterface: Class<*>,
+            resolverInfo: RootResolverInfo
+        ): RootType? {
             if (type == null) {
                 if (required) {
                     throw SchemaClassScannerError("Type definition for root $name type '$typeName' not found!")
@@ -549,7 +585,13 @@ internal class SchemaClassScanner(
         }
     }
 
-    internal class RootType(val name: String, val type: ObjectTypeDefinition, val resolvers: List<GraphQLRootResolver>, val resolverInterface: Class<*>, val resolverInfo: RootResolverInfo)
+    internal class RootType(
+        val name: String,
+        val type: ObjectTypeDefinition,
+        val resolvers: List<GraphQLRootResolver>,
+        val resolverInterface: Class<*>,
+        val resolverInfo: RootResolverInfo
+    )
 }
 
 internal class SchemaClassScannerError(message: String, throwable: Throwable? = null) : RuntimeException(message, throwable)

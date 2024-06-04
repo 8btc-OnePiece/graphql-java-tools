@@ -17,10 +17,4 @@ internal class MissingFieldResolver(
             }
     override fun scanForMatches(): List<TypeClassMatcher.PotentialMatch> = listOf()
     override fun createDataFetcher(): DataFetcher<*> = missingResolverDataFetcherProvider.createDataFetcher(field, options)
-    //    // offer necessary javaTypes matching schema
-//    override fun scanForMatches(): List<TypeClassMatcher.PotentialMatch> = inputValueClassMap.map {
-//        TypeClassMatcher.PotentialMatch.parameterType(it.key.type, it.value, genericType, SchemaClassScanner.MethodParameterEmptyReference(), false)
-//    } + listOf(TypeClassMatcher.PotentialMatch.returnValue(field.type, returnValueClass, genericType, SchemaClassScanner.ReturnValueEmptyReference(), false))
-//    // return null instead of an error message
-//    override fun createDataFetcher(): DataFetcher<*> = DataFetcher<Any> { null; }
 }
