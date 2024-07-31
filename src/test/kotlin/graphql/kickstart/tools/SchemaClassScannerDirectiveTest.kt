@@ -18,10 +18,10 @@ class SchemaClassScannerDirectiveTest {
             .schemaString(
                 """
                 scalar CustomValue
-                directive @doSomething(value: CustomValue) on FIELD_DEFINITION 
+                directive @doSomething(value: CustomValue = "some thing") on FIELD_DEFINITION 
 
                 type Query {
-                    string: String @doSomething(value: "some thing")
+                    string: String @doSomething
                 }
                 """)
             .resolvers(object : GraphQLQueryResolver { fun string(): String = "hello" })

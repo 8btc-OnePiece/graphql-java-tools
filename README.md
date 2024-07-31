@@ -13,3 +13,5 @@
 3. 为SchemaParserDictionary按java路径导入提供支持
     - 删除SchemaClassScanner下init中的部分校验，完整解释见改动处代码注释
     - 删除SchemaClassScanner中validateAndCreateResult中部分报警日志
+4. 构建AppliedDirective时，为其赋默认值
+    - SchemaParser中buildAppliedDirectives逻辑修改，支持默认值

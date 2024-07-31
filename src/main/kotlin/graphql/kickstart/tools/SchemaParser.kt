@@ -404,7 +404,7 @@ class SchemaParser internal constructor(
             val graphQLDirective = schemaDirectives.find { d -> d.name == directive.name }
                 ?: DirectiveInfo.GRAPHQL_SPECIFICATION_DIRECTIVE_MAP[directive.name]
                 ?: throw SchemaError("Found applied directive ${directive.name} without corresponding directive definition.")
-            val graphQLArguments = graphQLDirective.arguments.associateBy { it.name }
+            val appliedArguments =  directive.arguments.associateBy { it.name }
 
             GraphQLAppliedDirective.newDirective()
                 .name(directive.name)
@@ -412,17 +412,17 @@ class SchemaParser internal constructor(
                 .definition(directive)
                 .comparatorRegistry(runtimeWiring.comparatorRegistry)
                 .apply {
-                    directive.arguments.forEach { arg ->
-                        val graphQLArgument = graphQLArguments[arg.name]
-                            ?: throw SchemaError("Found an unexpected directive argument ${directive.name}#${arg.name} .")
+                    graphQLDirective.arguments.forEach{ definitionArg ->
                         argument(GraphQLAppliedDirectiveArgument.newArgument()
-                            .name(arg.name)
-                            // TODO instead of guessing the type from its value, lookup the directive definition
-                            .type(graphQLArgument.type)
-                            .valueLiteral(arg.value)
-                            .description(graphQLArgument.description)
+                            .name(definitionArg.name)
+                            .type(definitionArg.type)
+                            .inputValueWithState(
+                                appliedArguments[definitionArg.name]?.let { InputValueWithState.newLiteralValue(it.value) }
+                                    ?: definitionArg.argumentDefaultValue
+                            )
+                            .description(definitionArg.description)
                             .build()
-                        )
+                        ).build()
                     }
                 }
                 .build()
